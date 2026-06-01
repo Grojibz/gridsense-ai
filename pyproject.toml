@@ -40,10 +40,11 @@ degrade = [
     "scikit-learn>=1.4",
     "pandas>=2.2",
     "numpy>=1.26",
-    "mlflow>=2.12",
-    "evidently>=0.4",
+    # Pin to 2.x to match the docker-compose MLflow server (v2.12.1).
+    "mlflow>=2.12,<3",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
+    # evidently (drift monitoring) is wired up in M4
 ]
 dev = [
     "ruff>=0.4",
