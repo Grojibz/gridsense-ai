@@ -68,6 +68,17 @@ services:
       SALT: ${LANGFUSE_SALT:-dev-salt-change-me}
       NEXTAUTH_URL: http://localhost:3000
       TELEMETRY_ENABLED: "false"
+      # Headless bootstrap: auto-create an org/project/user and fixed API keys on first
+      # start, so the app can trace without anyone clicking through the UI. Dev-only.
+      LANGFUSE_INIT_ORG_ID: gridsense
+      LANGFUSE_INIT_ORG_NAME: GridSense
+      LANGFUSE_INIT_PROJECT_ID: docrag
+      LANGFUSE_INIT_PROJECT_NAME: DocRAG
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-gridsense-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-gridsense-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@gridsense.local}
+      LANGFUSE_INIT_USER_NAME: GridSense Dev
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-gridsense-dev}
     ports:
       - "3000:3000"
     depends_on:

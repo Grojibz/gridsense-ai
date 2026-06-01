@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "llama3.2"
     ollama_embedding_model: str = "nomic-embed-text"
 
+    # --- DocRAG guardrails -------------------------------------------------
+    # Minimum retrieval relevance (0..1) for a chunk to count as context. Below this
+    # for all chunks, DocRAG refuses rather than answer from irrelevant context.
+    # Tuned for Ollama nomic-embed-text; adjust per embedding provider.
+    docrag_min_relevance: float = 0.5
+    # Minimum self-reported answer confidence (0..1) below which DocRAG refuses.
+    docrag_min_confidence: float = 0.3
+    # How many chunks to retrieve per question.
+    docrag_top_k: int = 4
+
     # --- Datastores --------------------------------------------------------
     database_url: str = Field(
         default="postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense",

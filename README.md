@@ -179,7 +179,7 @@ This is built milestone by milestone so progress is visible in the commit histor
 
 - [x] **M0 — Scaffold.** Repo, `pyproject`, ruff+pytest+pre-commit, CI green, docker-compose up.
 - [x] **M1 — DocRAG MVP.** Ingest → pgvector → LangChain chain → cited answer via FastAPI.
-- [ ] **M2 — DocRAG hardening.** Langfuse tracing, confidence/guardrails, eval harness in CI.
+- [x] **M2 — DocRAG hardening.** Langfuse tracing, confidence/guardrails, eval harness.
 - [ ] **M3 — DegradeML training.** Feature build (SQL), training, MLflow tracking + registry, model card.
 - [ ] **M4 — Serve + monitor.** `/predict` from registry, Evidently drift report, prediction logging.
 - [ ] **M5 — Deploy + polish.** Dockerised services, k8s manifests, README/diagrams, demo GIFs.

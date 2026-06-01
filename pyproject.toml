@@ -33,7 +33,7 @@ docrag = [
     "pgvector>=0.2.5",
     "sqlalchemy>=2.0",
     "pypdf>=4.0",
-    # langfuse tracing is wired up in M2
+    "langfuse>=2.39,<3",
 ]
 # Module B — DegradeML (wired up from M3)
 degrade = [
