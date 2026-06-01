@@ -177,8 +177,8 @@ python -m gridsense.degrade.monitor      # drift report
 
 This is built milestone by milestone so progress is visible in the commit history.
 
-- [ ] **M0 — Scaffold.** Repo, `pyproject`, ruff+pytest+pre-commit, CI green, docker-compose up.
-- [ ] **M1 — DocRAG MVP.** Ingest → pgvector → LangChain chain → cited answer via FastAPI.
+- [x] **M0 — Scaffold.** Repo, `pyproject`, ruff+pytest+pre-commit, CI green, docker-compose up.
+- [x] **M1 — DocRAG MVP.** Ingest → pgvector → LangChain chain → cited answer via FastAPI.
 - [ ] **M2 — DocRAG hardening.** Langfuse tracing, confidence/guardrails, eval harness in CI.
 - [ ] **M3 — DegradeML training.** Feature build (SQL), training, MLflow tracking + registry, model card.
 - [ ] **M4 — Serve + monitor.** `/predict` from registry, Evidently drift report, prediction logging.

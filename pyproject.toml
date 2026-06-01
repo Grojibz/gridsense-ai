@@ -24,13 +24,16 @@ dependencies = [
 [project.optional-dependencies]
 # Module A — DocRAG (wired up from M1)
 docrag = [
-    "langchain>=0.2",
-    "langchain-community>=0.2",
-    "langchain-openai>=0.1",
+    "langchain-core>=0.3",
+    "langchain-text-splitters>=0.3",
+    "langchain-openai>=0.2",
+    "langchain-ollama>=0.2",
+    "langchain-postgres>=0.0.12",
     "psycopg[binary]>=3.1",
     "pgvector>=0.2.5",
     "sqlalchemy>=2.0",
-    "langfuse>=2.0",
+    "pypdf>=4.0",
+    # langfuse tracing is wired up in M2
 ]
 # Module B — DegradeML (wired up from M3)
 degrade = [
