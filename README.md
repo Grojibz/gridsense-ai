@@ -5,13 +5,9 @@
 > a **RAG assistant over technical documentation** and an **MLOps pipeline for
 > battery-degradation prediction**.
 
-![status](https://img.shields.io/badge/status-WIP-orange)
+[![CI](https://github.com/Grojibz/gridsense-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Grojibz/gridsense-ai/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![CI](https://img.shields.io/badge/CI-GitHub_Actions-blueviolet)
-
-*(Replace badges/links once the repo is live. Rename the project if you prefer —
-`GridSense` is a placeholder.)*
 
 ---
 

@@ -55,7 +55,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/gridsense-ai"
+Homepage = "https://github.com/Grojibz/gridsense-ai"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gridsense"]
