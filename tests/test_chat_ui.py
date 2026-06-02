@@ -13,4 +13,5 @@ def test_root_serves_chat_html() -> None:
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     assert "GridSense" in resp.text
-    assert "/ask" in resp.text  # the page calls the ask endpoint
+    assert "/ask" in resp.text  # chat tab calls the ask endpoint
+    assert "/predict" in resp.text  # prediction tab calls the predict endpoint
