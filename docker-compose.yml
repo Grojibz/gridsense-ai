@@ -85,6 +85,32 @@ services:
       langfuse-db:
         condition: service_healthy
 
+  # GridSense FastAPI app (DocRAG /ask + DegradeML /predict). The LLM provider (Ollama)
+  # runs on the host, reached via host.docker.internal; datastores are compose services.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gridsense}:${POSTGRES_PASSWORD:-gridsense}@postgres:5432/${POSTGRES_DB:-gridsense}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      LANGFUSE_HOST: http://langfuse:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-gridsense-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-gridsense-dev}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+
 volumes:
   pgdata:
   mlartifacts:

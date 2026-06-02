@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gridsense-api
+  namespace: gridsense
+  labels:
+    app.kubernetes.io/name: gridsense-api
+    app.kubernetes.io/part-of: gridsense
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gridsense-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gridsense-api
+        app.kubernetes.io/part-of: gridsense
+    spec:
+      containers:
+        - name: api
+          # Build with: docker build -t gridsense-api:latest . — then push to your registry.
+          image: gridsense-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: gridsense-config
+            - secretRef:
+                name: gridsense-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20

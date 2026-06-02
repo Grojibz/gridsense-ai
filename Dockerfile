@@ -1,5 +1,4 @@
-# Application image for the GridSense FastAPI service.
-# Module-specific extras (docrag/degrade) are layered in as those milestones land.
+# Application image for the GridSense FastAPI service (serves /ask and /predict).
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -8,10 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Copy metadata + sources, then install the package (base deps only for now).
+# Copy metadata + sources, then install the package with both module extras so the
+# image can serve DocRAG (/ask) and DegradeML (/predict).
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && pip install ".[docrag,degrade]"
 
 EXPOSE 8000
 

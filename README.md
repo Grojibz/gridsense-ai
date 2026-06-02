@@ -92,7 +92,9 @@ Cloud LLM calls use Azure OpenAI; set `LLM_PROVIDER=ollama` to run fully offline
 gridsense-ai/
 ├── README.md
 ├── pyproject.toml              # deps, ruff, pytest config
-├── docker-compose.yml          # postgres+pgvector, mlflow, langfuse
+├── Dockerfile                  # API image (serves /ask + /predict)
+├── docker-compose.yml          # postgres+pgvector, mlflow, langfuse, api
+├── Makefile                    # common dev commands (make help)
 ├── .github/workflows/ci.yml    # lint + test + build on every PR
 ├── .pre-commit-config.yaml
 ├── src/
@@ -152,24 +154,52 @@ treated as a production asset.
 
 ## Getting started
 
+The default setup runs **fully offline** using a local [Ollama](https://ollama.com) for the
+LLM + embeddings; set `LLM_PROVIDER=azure` (and the `AZURE_OPENAI_*` keys) to use Azure
+OpenAI instead.
+
 ```bash
-# 1. Spin up infra (postgres+pgvector, mlflow, langfuse)
-docker compose up -d
+# 0. Prereqs: Docker, and Ollama with the models pulled (for the offline default)
+ollama pull llama3.2 && ollama pull nomic-embed-text
 
-# 2. Install
-pip install -e ".[dev]"
-cp .env.example .env        # set AZURE_OPENAI_* or LLM_PROVIDER=ollama
+# 1. Configure
+cp .env.example .env        # defaults to LLM_PROVIDER=ollama; Langfuse keys auto-provisioned
 
-# 3. Module A — ingest sample docs and ask a question
-python -m gridsense.docrag.ingest data/docs
-uvicorn gridsense.api.main:app --reload
-# POST /ask {"question": "..."}
+# 2. Bring up the whole stack: postgres+pgvector, mlflow, langfuse, and the API
+docker compose up -d --build     # or: make up
 
-# 4. Module B — train, register, serve
-python -m gridsense.degrade.train
-python -m gridsense.degrade.monitor      # drift report
-# POST /predict {...}
+# 3. Module A — ingest sample docs, then ask
+docker compose exec api python -m gridsense.docrag.ingest data/docs
+curl localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"question": "What SOH threshold is end of life for grid batteries?"}'
+
+# 4. Module B — train + register, then predict
+docker compose exec api python -m gridsense.degrade.train
+curl localhost:8000/predict -H 'content-type: application/json' \
+  -d '{"cycle_count":1500,"avg_temperature_c":33,"avg_dod":0.7,"avg_c_rate":1.0,"calendar_age_days":600}'
+
+# 5. Drift report over recent /predict inputs vs the training distribution
+docker compose exec api python -m gridsense.degrade.monitor
 ```
+
+**Local dev** (without the API container): `make install` (or `pip install -e ".[docrag,degrade,dev]"`),
+then run the modules with your own interpreter and `uvicorn gridsense.api.main:app --reload`.
+`make help` lists the common tasks (`lint`, `test`, `ingest`, `train`, `eval`, `monitor`).
+
+Service URLs: API → `:8000` (`/docs` for OpenAPI), MLflow → `:5000`, Langfuse → `:3000`.
+
+### Testing
+
+```bash
+make test               # offline unit tests (fakes — no infra needed; this is what CI runs)
+make test-integration   # gated end-to-end tests against the live stack (RUN_INTEGRATION=1)
+```
+
+### Kubernetes (optional)
+
+`k8s/` holds Namespace / ConfigMap / Secret / Deployment / Service manifests for the API
+(datastores + Ollama are referenced as external endpoints). Build and push the image, then
+`kubectl apply -f k8s/`.
 
 ---
 
@@ -182,10 +212,16 @@ This is built milestone by milestone so progress is visible in the commit histor
 - [x] **M2 — DocRAG hardening.** Langfuse tracing, confidence/guardrails, eval harness.
 - [x] **M3 — DegradeML training.** Feature build (SQL), training, MLflow tracking + registry, model card.
 - [x] **M4 — Serve + monitor.** `/predict` from registry, Evidently drift report, prediction logging.
-- [ ] **M5 — Deploy + polish.** Dockerised services, k8s manifests, README/diagrams, demo GIFs.
+- [x] **M5 — Deploy + polish.** Dockerised API service, k8s manifests, Makefile, docs.
 
 **Definition of done (per module):** runs from a clean clone via documented commands,
 covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
+
+> **Notes on this build.** The offline default uses a local **llama3.2 (3B)**, so DocRAG
+> answer/judge quality is indicative rather than production-grade — switch `LLM_PROVIDER`
+> to Azure OpenAI for stronger results (the provider abstraction is built in). **CI** runs
+> the offline unit tests; the integration/eval tests are gated (`RUN_INTEGRATION=1`) as they
+> need a live Postgres/Ollama/MLflow stack.
 
 ---
 
