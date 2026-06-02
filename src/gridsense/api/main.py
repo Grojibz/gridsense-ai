@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from gridsense import __version__
 from gridsense.api.routes_ask import router as ask_router
+from gridsense.api.routes_chat import router as chat_router
 from gridsense.api.routes_predict import router as predict_router
 from gridsense.config import get_settings
 
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
             environment=settings.environment,
         )
 
+    app.include_router(chat_router)
     app.include_router(ask_router)
     app.include_router(predict_router)
     return app

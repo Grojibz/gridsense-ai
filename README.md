@@ -186,7 +186,8 @@ docker compose exec api python -m gridsense.degrade.monitor
 then run the modules with your own interpreter and `uvicorn gridsense.api.main:app --reload`.
 `make help` lists the common tasks (`lint`, `test`, `ingest`, `train`, `eval`, `monitor`).
 
-Service URLs: API → `:8000` (`/docs` for OpenAPI), MLflow → `:5000`, Langfuse → `:3000`.
+Service URLs: API → `:8000` (**chat UI at `/`**, OpenAPI at `/docs`), MLflow → `:5000`,
+Langfuse → `:3000`. The chat page is a dependency-free DocRAG assistant that calls `/ask`.
 
 ### Testing
 
