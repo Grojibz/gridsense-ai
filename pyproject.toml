@@ -44,7 +44,7 @@ degrade = [
     "mlflow>=2.12,<3",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
-    # evidently (drift monitoring) is wired up in M4
+    "evidently>=0.4,<0.5",
 ]
 dev = [
     "ruff>=0.4",

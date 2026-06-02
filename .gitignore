@@ -25,6 +25,7 @@ coverage.xml
 # Local data & artifacts
 mlruns/
 mlartifacts/
+reports/
 *.db
 *.sqlite3
 data/**/*.parquet

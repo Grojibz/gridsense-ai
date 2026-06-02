@@ -181,7 +181,7 @@ This is built milestone by milestone so progress is visible in the commit histor
 - [x] **M1 — DocRAG MVP.** Ingest → pgvector → LangChain chain → cited answer via FastAPI.
 - [x] **M2 — DocRAG hardening.** Langfuse tracing, confidence/guardrails, eval harness.
 - [x] **M3 — DegradeML training.** Feature build (SQL), training, MLflow tracking + registry, model card.
-- [ ] **M4 — Serve + monitor.** `/predict` from registry, Evidently drift report, prediction logging.
+- [x] **M4 — Serve + monitor.** `/predict` from registry, Evidently drift report, prediction logging.
 - [ ] **M5 — Deploy + polish.** Dockerised services, k8s manifests, README/diagrams, demo GIFs.
 
 **Definition of done (per module):** runs from a clean clone via documented commands,

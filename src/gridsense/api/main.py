@@ -4,8 +4,8 @@ Run locally with::
 
     uvicorn gridsense.api.main:app --reload
 
-Exposes ``/health`` plus the DocRAG ``/ask`` endpoint (M1). The ``/predict`` (DegradeML)
-endpoint is added in M4.
+Exposes ``/health``, the DocRAG ``/ask`` endpoint (M1), and the DegradeML ``/predict``
+endpoint (M4).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from gridsense import __version__
 from gridsense.api.routes_ask import router as ask_router
+from gridsense.api.routes_predict import router as predict_router
 from gridsense.config import get_settings
 
 
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(ask_router)
+    app.include_router(predict_router)
     return app
 
 

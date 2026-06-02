@@ -94,6 +94,20 @@ def generate_synthetic(n: int = 4000, *, seed: int = 42) -> pd.DataFrame:
     )
 
 
+def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the SQL-derived stress features in pandas and return the model feature frame.
+
+    This is the serve-time mirror of ``FEATURE_SQL`` (training derives these in Postgres);
+    keeping the formulas identical avoids train/serve skew. ``test_features_match_sql``
+    asserts the two paths agree on the same rows.
+    """
+    out = df.copy()
+    out["equivalent_full_cycles"] = out["cycle_count"] * out["avg_dod"]
+    out["temperature_stress"] = 2.0 ** ((out["avg_temperature_c"] - 25.0) / 10.0)
+    out["calendar_stress"] = np.sqrt(out["calendar_age_days"])
+    return out[FEATURE_COLUMNS]
+
+
 def get_engine(settings: Settings | None = None) -> Engine:
     """Create a SQLAlchemy engine for the app's Postgres database."""
     from sqlalchemy import create_engine
@@ -137,7 +151,11 @@ def build_features(
 
     engine = engine or get_engine(settings)
     df = pd.read_sql(text(FEATURE_SQL), engine)
-    return df[FEATURE_COLUMNS], df[TARGET]
+    # Cast features to float64 so the trained model's signature uses doubles throughout.
+    # Otherwise integer columns (e.g. cycle_count) yield a `long` signature that rejects the
+    # float inputs sent at serve time (train/serve schema skew).
+    x = df[FEATURE_COLUMNS].astype("float64")
+    return x, df[TARGET]
 
 
 def main(argv: list[str] | None = None) -> int:
