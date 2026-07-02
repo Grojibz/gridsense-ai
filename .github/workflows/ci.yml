@@ -12,18 +12,33 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install (base + docrag + degrade + dev)
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[docrag,degrade,dev]"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+            pip install ruff pytest pytest-cov
+          elif [ -f pyproject.toml ]; then
+            pip install -e ".[docrag,degrade,dev]"
+          else
+            echo "No requirements.txt or pyproject.toml found" >&2
+            exit 1
+          fi
 
       - name: Lint (ruff)
         run: |
@@ -34,10 +49,12 @@ jobs:
         run: pytest --cov=gridsense --cov-report=term-missing
 
   build-image:
-    # Sanity-check the Docker build on PRs; image is not pushed.
+    # Sanity-check the Docker build; image is not pushed.
     runs-on: ubuntu-latest
     needs: lint-and-test
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Build app image
         run: docker build -t gridsense:ci .
