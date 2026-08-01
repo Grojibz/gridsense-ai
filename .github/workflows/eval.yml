@@ -1,0 +1,99 @@
+name: Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always runs: catches a golden dataset that has drifted away from the corpus (a
+  # `must_contain` string edited out of data/docs makes the retrieval ground truth a lie)
+  # and verifies the gate logic itself. No LLM, no datastore, a few seconds.
+  golden-dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[docrag,dev]"
+      - name: Validate golden dataset + thresholds
+        run: pytest tests/test_golden_dataset.py tests/test_thresholds.py tests/test_ragas_eval.py -v
+
+  # The actual merge gate. Needs an LLM, so it only runs where the Azure OpenAI secrets
+  # exist; on a fork PR it is skipped rather than failing on missing credentials.
+  ragas-gate:
+    runs-on: ubuntu-latest
+    needs: golden-dataset
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gridsense
+          POSTGRES_PASSWORD: gridsense
+          POSTGRES_DB: gridsense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      LLM_PROVIDER: azure
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      AZURE_OPENAI_CHAT_DEPLOYMENT: ${{ vars.AZURE_OPENAI_CHAT_DEPLOYMENT || 'gpt-4o-mini' }}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${{ vars.AZURE_OPENAI_EMBEDDING_DEPLOYMENT || 'text-embedding-3-small' }}
+      DATABASE_URL: postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense
+      LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Check for LLM credentials
+        id: creds
+        run: |
+          if [ -n "${AZURE_OPENAI_API_KEY}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::AZURE_OPENAI_API_KEY is not set — the RAGAS merge gate is skipped."
+          fi
+
+      - name: Install
+        if: steps.creds.outputs.available == 'true'
+        run: pip install -e ".[docrag,eval]"
+
+      - name: Run RAGAS over the golden dataset
+        if: steps.creds.outputs.available == 'true'
+        run: python eval/run_ragas.py --out eval/results.json
+
+      - name: Upload report
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-report
+          path: eval/results.json
+
+      # Blocks the merge when faithfulness / context_precision (and the deterministic
+      # retrieval + refusal metrics) fall below the thresholds in
+      # src/gridsense/docrag/eval/thresholds.py.
+      - name: Enforce thresholds
+        if: steps.creds.outputs.available == 'true'
+        run: python eval/check_thresholds.py eval/results.json

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from gridsense.docrag.chain import NO_ANSWER, RagAnswer, answer_question
+from gridsense.docrag.chain import RagAnswer, answer_question
 from gridsense.docrag.eval.dataset import EvalItem, load_dataset
 from gridsense.docrag.eval.judge import judge_groundedness, judge_relevance
 
@@ -77,7 +77,7 @@ def _score_item(
     *,
     judge_model: BaseChatModel,
 ) -> ItemResult:
-    refused = answer.answer.strip() == NO_ANSWER
+    refused = answer.refused
 
     if not item.answerable:
         return ItemResult(

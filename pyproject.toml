@@ -46,6 +46,14 @@ degrade = [
     "psycopg[binary]>=3.1",
     "evidently>=0.4,<0.5",
 ]
+# Eval harness — RAGAS + its dataset/arrow stack. Kept out of `docrag` so the API image
+# and the unit-test CI job stay lean; only the eval workflow installs it.
+eval = [
+    "ragas>=0.4,<0.5",
+    # ragas still imports the pre-1.0 `langchain_community.chat_models.vertexai` path,
+    # which langchain-community 0.4 removed. 0.3.x is compatible with langchain-core 1.x.
+    "langchain-community>=0.3.31,<0.4",
+]
 dev = [
     "ruff>=0.4",
     "pytest>=8.0",

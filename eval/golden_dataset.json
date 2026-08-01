@@ -1,0 +1,392 @@
+{
+  "corpus": "data/docs",
+  "description": "Curated golden set for DocRAG. `expected_chunks` is retrieval ground truth: each entry names the source file and verbatim substrings that a correctly retrieved chunk must contain. `reference_answer` is the ground truth used by RAGAS context_precision / context_recall. Unanswerable items (vague / out_of_scope / insufficient_context) carry no expected_chunks and are scored on refusal instead of RAGAS.",
+  "items": [
+    {
+      "id": "soh-eol-threshold",
+      "category": "factual",
+      "answerable": true,
+      "query": "At what State of Health is a grid energy-storage battery considered end of life?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["80% SOH is the conventional"]
+        }
+      ],
+      "reference_answer": "80% State of Health is the conventional end-of-life threshold for grid energy-storage batteries. Past that point the usable energy and round-trip efficiency have degraded enough that the asset is typically retired or repurposed."
+    },
+    {
+      "id": "soh-definition",
+      "category": "factual",
+      "answerable": true,
+      "query": "How is State of Health defined for a battery cell?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["current maximum capacity as a percentage of its"]
+        }
+      ],
+      "reference_answer": "State of Health expresses a battery's current maximum capacity as a percentage of its original rated capacity. A cell at 100% SOH delivers its full nameplate capacity, and a cell at 80% SOH delivers only 80%."
+    },
+    {
+      "id": "soh-vs-soc",
+      "category": "factual",
+      "answerable": true,
+      "query": "What is the difference between State of Health and State of Charge?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": [
+            "SOH is distinct from State of Charge",
+            "SOC is how full the battery is right now"
+          ]
+        }
+      ],
+      "reference_answer": "State of Charge is how full the battery is right now, as 0-100% of its current capacity. State of Health is how much total capacity the battery has permanently lost over its life. SOC is a momentary state; SOH is cumulative and irreversible."
+    },
+    {
+      "id": "degradation-two-families",
+      "category": "synthesis",
+      "answerable": true,
+      "query": "What are the two broad families of lithium-ion degradation mechanism?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": [
+            "capacity loss that occurs simply with the passage of time",
+            "capacity loss caused by charge/discharge cycling"
+          ]
+        }
+      ],
+      "reference_answer": "Lithium-ion degradation splits into calendar ageing and cycle ageing. Calendar ageing is capacity loss that occurs simply with the passage of time, even when the cell is idle. Cycle ageing is capacity loss caused by charge/discharge cycling."
+    },
+    {
+      "id": "calendar-ageing-mechanism",
+      "category": "factual",
+      "answerable": true,
+      "query": "Which mechanism dominates calendar ageing in a lithium-ion cell?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": [
+            "solid-electrolyte interphase (SEI) layer is the dominant calendar-ageing mechanism"
+          ]
+        }
+      ],
+      "reference_answer": "Growth of the solid-electrolyte interphase (SEI) layer is the dominant calendar-ageing mechanism. Calendar ageing is accelerated by high State of Charge and high temperature."
+    },
+    {
+      "id": "cycle-ageing-mechanism",
+      "category": "factual",
+      "answerable": true,
+      "query": "Why is fast charging in the cold bad for a lithium-ion cell?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["during fast charging at low temperature is a key cycle-ageing mechanism"]
+        }
+      ],
+      "reference_answer": "Lithium plating during fast charging at low temperature is a key cycle-ageing mechanism. It is one of the ways cycling permanently consumes active lithium and shortens cell life."
+    },
+    {
+      "id": "cycle-ageing-per-cycle-cost",
+      "category": "factual",
+      "answerable": true,
+      "query": "What happens to a cell on every full charge/discharge cycle?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["consumes a small amount of active lithium and mechanically stresses the electrodes"]
+        }
+      ],
+      "reference_answer": "Each full cycle consumes a small amount of active lithium and mechanically stresses the electrodes, which is why cycling permanently reduces capacity."
+    },
+    {
+      "id": "temperature-degradation-rate",
+      "category": "factual",
+      "answerable": true,
+      "query": "How much faster does a battery degrade when it runs 10 degrees hotter?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["Degradation roughly doubles for every 10"]
+        }
+      ],
+      "reference_answer": "Degradation roughly doubles for every 10 °C increase in temperature. Keeping cells between 15 °C and 35 °C materially extends life."
+    },
+    {
+      "id": "operating-temperature-band",
+      "category": "factual",
+      "answerable": true,
+      "query": "What cell temperature range should we hold to extend battery life?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["35"]
+        }
+      ],
+      "reference_answer": "Keeping cells between 15 °C and 35 °C materially extends life, because degradation roughly doubles for every 10 °C increase."
+    },
+    {
+      "id": "degradation-stressors",
+      "category": "synthesis",
+      "answerable": true,
+      "query": "Which operating stressors shorten battery life the most?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["The main stressors that shorten battery life are:"]
+        }
+      ],
+      "reference_answer": "The main stressors are high temperature, high depth of discharge, high C-rate, and sustained high State of Charge. High temperature roughly doubles degradation every 10 °C, wide SOC windows age a cell faster than shallow cycling, high current raises heat and mechanical stress, and storing near 100% SOC accelerates calendar ageing."
+    },
+    {
+      "id": "high-c-rate-effect",
+      "category": "factual",
+      "answerable": true,
+      "query": "Why does operating at a high C-rate accelerate degradation?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["Charging or discharging at high current relative to capacity increases"]
+        }
+      ],
+      "reference_answer": "Charging or discharging at high current relative to capacity increases heat generation and mechanical stress, both of which accelerate degradation."
+    },
+    {
+      "id": "storage-soc-recommendation",
+      "category": "factual",
+      "answerable": true,
+      "query": "What State of Charge should cells be stored at for long periods?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["50% SOC is gentler for long-term storage"]
+        }
+      ],
+      "reference_answer": "Around 50% SOC is gentler for long-term storage. Storing cells near 100% SOC accelerates calendar ageing."
+    },
+    {
+      "id": "shallow-cycling-benefit",
+      "category": "synthesis",
+      "answerable": true,
+      "query": "Does cycling between 30% and 70% really buy us more cycles than 0-100%?",
+      "expected_chunks": [
+        {
+          "source": "battery_soh.md",
+          "must_contain": ["Cycling a cell over a wider SOC window"]
+        },
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["generally yields more cycles before end of life"]
+        }
+      ],
+      "reference_answer": "Yes. Depth of Discharge is the fraction of capacity withdrawn in a cycle, and lower DoD generally yields more cycles before end of life. Cycling over a wider SOC window such as 0-100% ages a cell faster than shallow cycling such as 30-70%."
+    },
+    {
+      "id": "c-rate-definition",
+      "category": "factual",
+      "answerable": true,
+      "query": "What does C-rate mean?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["is the charge/discharge current normalised to capacity"]
+        }
+      ],
+      "reference_answer": "C-rate is the charge/discharge current normalised to capacity. A 1C rate fully charges or discharges the battery in one hour, 0.5C takes two hours, and 2C takes thirty minutes."
+    },
+    {
+      "id": "c-rate-2c-duration",
+      "category": "factual",
+      "answerable": true,
+      "query": "How long does a full discharge at 2C take?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["2C takes thirty minutes"]
+        }
+      ],
+      "reference_answer": "A 2C discharge empties the battery in thirty minutes, since 1C corresponds to a one-hour full charge or discharge."
+    },
+    {
+      "id": "round-trip-efficiency",
+      "category": "factual",
+      "answerable": true,
+      "query": "What round-trip efficiency should we expect from a modern lithium-ion BESS?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["Modern lithium-ion BESS achieve roughly 85"]
+        }
+      ],
+      "reference_answer": "Modern lithium-ion BESS achieve roughly 85-95% round-trip efficiency, measured as energy out over energy in across a full charge/discharge cycle. The losses appear as heat."
+    },
+    {
+      "id": "liquid-vs-air-cooling",
+      "category": "factual",
+      "answerable": true,
+      "query": "Why do large containerised BESS use liquid cooling instead of air?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["cooling is common in large containerised systems because it removes heat more effectively"]
+        }
+      ],
+      "reference_answer": "Liquid cooling is common in large containerised systems because it removes heat more effectively than air cooling at high power."
+    },
+    {
+      "id": "temperature-gradient-risk",
+      "category": "synthesis",
+      "answerable": true,
+      "query": "Why does thermal management care about the temperature gradient across the pack, not just the peak temperature?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["gradient* across the pack, since uneven temperatures cause cells to age at"]
+        }
+      ],
+      "reference_answer": "Uneven temperatures across the pack cause cells to age at different rates and drift out of balance, so thermal management limits both the absolute cell temperature and the temperature gradient across the pack."
+    },
+    {
+      "id": "thermal-runaway-definition",
+      "category": "factual",
+      "answerable": true,
+      "query": "What is thermal runaway?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["self-sustaining exothermic reaction in which a cell generates heat"]
+        }
+      ],
+      "reference_answer": "Thermal runaway is a self-sustaining exothermic reaction in which a cell generates heat faster than it can dissipate, driving neighbouring cells into the same condition and potentially causing fire."
+    },
+    {
+      "id": "thermal-runaway-triggers",
+      "category": "factual",
+      "answerable": true,
+      "query": "What typically triggers thermal runaway in a BESS?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["Common triggers are internal short circuits, mechanical damage,"]
+        }
+      ],
+      "reference_answer": "Common triggers are internal short circuits, mechanical damage, overcharging, and external heating."
+    },
+    {
+      "id": "thermal-runaway-mitigations",
+      "category": "factual",
+      "answerable": true,
+      "query": "What design measures mitigate thermal runaway propagation?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["Mitigations include cell-level fusing, physical spacing"]
+        }
+      ],
+      "reference_answer": "Mitigations include cell-level fusing, physical spacing and barriers between cells, gas detection, and deflagration venting in the enclosure."
+    },
+    {
+      "id": "bms-responsibilities",
+      "category": "synthesis",
+      "answerable": true,
+      "query": "What are the core responsibilities of a Battery Management System?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": [
+            "equalising the charge across series-connected cells",
+            "opening contactors on over-voltage, under-voltage, over-current, or"
+          ]
+        }
+      ],
+      "reference_answer": "A BMS monitors cell voltages, currents and temperatures and enforces safe operating limits. Its core responsibilities are cell balancing, equalising charge across series-connected cells; protection, opening contactors on over-voltage, under-voltage, over-current or over-temperature events; and state estimation, computing SOC and SOH from measured signals."
+    },
+    {
+      "id": "bms-state-estimation",
+      "category": "factual",
+      "answerable": true,
+      "query": "Where do the SOC and SOH values actually come from in a running system?",
+      "expected_chunks": [
+        {
+          "source": "bess_operations.md",
+          "must_contain": ["computing State of Charge (SOC) and State of Health (SOH) from"]
+        }
+      ],
+      "reference_answer": "The Battery Management System performs state estimation, computing State of Charge and State of Health from measured cell voltages, currents and temperatures."
+    },
+    {
+      "id": "vague-is-it-safe",
+      "category": "vague",
+      "answerable": false,
+      "query": "Is it safe?",
+      "expected_chunks": [],
+      "reference_answer": "The question is too vague to answer. It does not say what system, condition or hazard is being asked about, so no grounded answer is possible without clarification."
+    },
+    {
+      "id": "vague-what-about-temperature",
+      "category": "vague",
+      "answerable": false,
+      "query": "What about the temperature?",
+      "expected_chunks": [],
+      "reference_answer": "The question has no antecedent. Without knowing which temperature, which asset, or what aspect is being asked about, no grounded answer is possible."
+    },
+    {
+      "id": "vague-how-bad",
+      "category": "vague",
+      "answerable": false,
+      "query": "How bad is it and what should I do next?",
+      "expected_chunks": [],
+      "reference_answer": "The question does not identify a subject, a measurement or a fault condition, so the documentation cannot support any specific answer."
+    },
+    {
+      "id": "oos-capital-of-france",
+      "category": "out_of_scope",
+      "answerable": false,
+      "query": "What is the capital of France?",
+      "expected_chunks": [],
+      "reference_answer": "This is outside the scope of the battery energy-storage documentation and cannot be answered from it."
+    },
+    {
+      "id": "oos-write-python",
+      "category": "out_of_scope",
+      "answerable": false,
+      "query": "Write me a Python script that sorts a list of integers.",
+      "expected_chunks": [],
+      "reference_answer": "This is a coding request, not a documentation question, and is outside the scope of the indexed battery documentation."
+    },
+    {
+      "id": "oos-lithium-price",
+      "category": "out_of_scope",
+      "answerable": false,
+      "query": "What is today's spot price of lithium carbonate?",
+      "expected_chunks": [],
+      "reference_answer": "Commodity pricing is not covered by the battery energy-storage documentation and is not available from it."
+    },
+    {
+      "id": "insufficient-cycle-life-number",
+      "category": "insufficient_context",
+      "answerable": false,
+      "query": "How many cycles does an LFP cell deliver at 80% depth of discharge before it reaches end of life?",
+      "expected_chunks": [],
+      "reference_answer": "The documentation states that lower depth of discharge yields more cycles, but it gives no cycle-life figures for any chemistry, so this number cannot be answered from it."
+    },
+    {
+      "id": "insufficient-iec-standard",
+      "category": "insufficient_context",
+      "answerable": false,
+      "query": "Which IEC standard governs grid connection of a battery energy-storage system?",
+      "expected_chunks": [],
+      "reference_answer": "The documentation does not reference any IEC or other grid-connection standard, so this cannot be answered from it."
+    },
+    {
+      "id": "insufficient-nmc-nominal-voltage",
+      "category": "insufficient_context",
+      "answerable": false,
+      "query": "What is the nominal cell voltage of an NMC cell?",
+      "expected_chunks": [],
+      "reference_answer": "The documentation covers SOH, degradation mechanisms and BESS operation but gives no cell chemistry voltage specifications, so this cannot be answered from it."
+    }
+  ]
+}

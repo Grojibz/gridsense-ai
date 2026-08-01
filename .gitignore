@@ -26,6 +26,7 @@ coverage.xml
 mlruns/
 mlartifacts/
 reports/
+eval/results.json
 *.db
 *.sqlite3
 data/**/*.parquet
@@ -34,6 +35,9 @@ data/**/*.csv
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Personal / interview prep — not part of the project docs
+presentation.md
 
 # OS / editor
 .DS_Store

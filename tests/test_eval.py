@@ -58,17 +58,27 @@ def test_score_answerable_answered_item() -> None:
     assert res.relevance == 0.8
 
 
+def _refusal() -> RagAnswer:
+    """A refusal as the chain now emits it — flagged structurally, not by its text."""
+    return RagAnswer(
+        answer=NO_ANSWER,
+        citations=[],
+        confidence=0.0,
+        refused=True,
+        refusal_reason="no_relevant_context",
+    )
+
+
 def test_score_unanswerable_refused_item() -> None:
     item = EvalItem(question="capital of France?", answerable=False)
-    answer = RagAnswer(answer=NO_ANSWER, citations=[], confidence=0.0)
-    res = _score_item(item, answer, judge_model=FakeChatModel(JudgeScore(score=0.0)))
+    res = _score_item(item, _refusal(), judge_model=FakeChatModel(JudgeScore(score=0.0)))
     assert res.refused is True
     assert res.answerable is False
 
 
 def test_score_answerable_but_refused_counts_against_quality() -> None:
     item = EvalItem(question="eol?", expected_source="a.md", answerable=True)
-    answer = RagAnswer(answer=NO_ANSWER, citations=[], confidence=0.0)
+    answer = _refusal()
     res = _score_item(item, answer, judge_model=FakeChatModel(JudgeScore(score=1.0)))
     assert res.refused is True
     assert res.citation_correct is False
