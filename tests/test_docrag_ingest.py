@@ -34,7 +34,11 @@ def test_chunk_documents_splits_long_text() -> None:
 
 
 class RecordingVectorStore:
-    """Captures store interactions so we can assert on the reset+write flow."""
+    """Captures store interactions so we can assert on the reset+write flow.
+
+    Behaves like a sound index for the post-ingest verification pass: every chunk
+    retrieves itself. See ``test_docrag_index_verify.py`` for the unsound cases.
+    """
 
     def __init__(self) -> None:
         self.deleted = False
@@ -49,6 +53,9 @@ class RecordingVectorStore:
 
     def add_documents(self, docs: list[Document]) -> None:
         self.added.extend(docs)
+
+    def similarity_search_with_relevance_scores(self, query: str, k: int = 1) -> list:
+        return [(Document(page_content=query, metadata={}), 1.0)]
 
 
 def test_ingest_path_resets_then_writes_chunks(tmp_path: Path) -> None:
