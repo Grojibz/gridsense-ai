@@ -34,18 +34,29 @@ model for generation). What they don't need is an LLM grading the output.
 ```
 items: 32  (answerable 23, unanswerable 9)
 
-faithfulness       0.000   [11/23 scored]
-answer_relevancy   0.000   [11/23 scored]
-context_precision  0.000   [11/23 scored]
-context_recall     0.000   [11/23 scored]
-retrieval_recall   0.870
-refusal_accuracy   1.000
+faithfulness       0.000   [19/23 scored]
+answer_relevancy   0.000   [19/23 scored]
+context_precision  0.000   [19/23 scored]
+context_recall     0.000   [19/23 scored]
+retrieval_recall   0.957
+refusal_accuracy   0.444
+output_validity    0.344
 ```
 
 **The four zeros are not scores.** They are the answerable items that the pipeline refused,
 which are assigned 0.0 deterministically without calling the judge. Every item that
 *was* sent to the judge came back `RagasOutputParserException` → NaN → dropped. Coverage
-lands at 11/23 = 48%.
+lands at 19/23 = 83% for the same reason the other numbers are bad: 19 of 23 answerable
+items never produced an answer to judge.
+
+Read together, the three deterministic metrics say something specific: **retrieval works,
+and almost nothing else gets a chance to.** Only 4 of 23 answerable items were actually
+answered — 16 failed output parsing, 3 found no relevant context.
+
+`refusal_accuracy` at 0.444 is the honest version of what used to read 1.000, and it is
+mostly a *symptom* of `output_validity`: 5 of the 9 unanswerable items were refused because
+the model produced garbage, not because a guardrail decided anything. Only 1 of the 9 was
+caught by the intent router.
 
 The gate handles this correctly — it fails on **coverage**, not just on the score:
 
@@ -67,17 +78,21 @@ argument for having built it.
 
 ### 1. ~~`refusal_accuracy = 1.000` is inflated~~ — fixed
 
-Of the 9 unanswerable items, only **7 were refused for a legitimate reason**. The other 2
-(`vague-what-about-temperature`, `oos-lithium-price`) were "refused" because the model
-produced unparseable output and hit the `invalid_output` fallback. Right answer, wrong
-reason — and it meant a *flakier* model scored as a better-behaved one.
+The metric counted *any* refusal as correct. On the run that first reported 1.000, 2 of the
+9 unanswerable items were "refused" only because the model produced unparseable output and
+hit the `invalid_output` fallback — right answer, wrong reason. A *flakier* model scored as
+a better-behaved one.
 
 `refusal_accuracy` now only credits a refusal when a guardrail actually decided to refuse.
 Parse failures land in a new **`output_validity`** metric instead — the fraction of items
 where the model returned a parseable object at all — which is where they belong.
 
-Still worth knowing: only 1 of the 9 was caught by the intent router (`oos-write-python`);
-the rest fell through to the retrieval relevance gate. That is the designed behaviour (the
+The effect is large and in the honest direction: the same pipeline now reports **0.444**,
+because on the latest run 5 of the 9 unanswerable items were refused by a parse failure
+rather than by a decision.
+
+Still worth knowing: only 1 of the 9 is caught by the intent router (`oos-write-python`);
+the rest fall through to the retrieval relevance gate. That is the designed behaviour (the
 router is precision-tuned and defers when unsure), but the router does less work than the
 headline number suggests.
 
@@ -122,19 +137,25 @@ against the measured 0.957.
 
 ### 3. The structured-output schema is unreliable on local models (open)
 
-Of the 23 answerable items, only **12 were actually answered**. 7 hit `invalid_output`
-(malformed completion, still malformed after the retry) and 4 refused on
-`no_relevant_context` / `low_confidence`.
+This is the dominant problem, and it masks everything else.
 
 - `llama3.2` (the documented offline default) returns things like
   `{"answer": "...usch moss ace ...@@@@"}` with `confidence` missing entirely, and
   effectively never answers.
-- `qwen2.5:7b-instruct` is materially better but still fails on 7/23.
+- `qwen2.5:7b-instruct` is materially better and still fails most of the time.
+
+**The failure rate is not stable, and two runs is not enough to quote one.** Across two
+runs on the same 32 items, `qwen2.5:7b-instruct` went from ~9 parse failures to 21 —
+`output_validity` 0.72 → 0.344. Ollama had been under sustained load for hours by the
+second run and the variable was not isolated, so treat both figures as "frequently, and
+unpredictably" rather than as a measured rate.
 
 Before the P1 downstream guardrail existed, this propagated an `OutputParserException`
 straight out of `/ask` as a 500. It is now contained by a retry plus a deterministic
-fallback — but *contained* is not *fixed*. The schema or the prompt needs work, or
-`docrag_output_retries` needs raising.
+fallback — the reason this eval run completed at all instead of dying on the first
+malformed completion. But *contained* is not *fixed*: the schema or the prompt needs work,
+or `docrag_output_retries` needs raising, or the offline default needs to be a model that
+can hold a schema.
 
 ## Relevance score distribution
 
