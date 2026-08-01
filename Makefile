@@ -43,9 +43,6 @@ build:  ## Build the api Docker image
 ingest:  ## Ingest sample docs into pgvector
 	$(PY) -m gridsense.docrag.ingest data/docs
 
-eval:  ## Run the DocRAG eval harness
-	$(PY) -m gridsense.docrag.eval.run
-
 eval-ragas:  ## Run RAGAS over the golden dataset -> eval/results.json
 	$(PY) eval/run_ragas.py --out eval/results.json
 
