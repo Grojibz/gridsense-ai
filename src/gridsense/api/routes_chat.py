@@ -41,7 +41,9 @@ _CHAT_HTML = """<!doctype html>
   .me { background:var(--me); align-self:flex-end; border-bottom-right-radius:4px; }
   .bot { background:var(--bot); align-self:flex-start; border-bottom-left-radius:4px; }
   .meta { font-size:12px; color:var(--muted); margin-top:8px; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; margin-right:6px; }
+  .warnbox { background:#3a2d12; border-left:3px solid var(--warn); border-radius:6px;
+             padding:8px 10px; margin-bottom:10px; font-size:13px; }
   details { margin-top:8px; font-size:13px; }
   details summary { cursor:pointer; color:var(--accent); }
   .cite { margin:6px 0; padding:8px 10px; background:#0b1220; border-radius:8px;
@@ -144,8 +146,19 @@ _CHAT_HTML = """<!doctype html>
   function renderAnswer(node, data){
     const pct = Math.round((data.confidence ?? 0) * 100);
     const color = pct >= 50 ? 'var(--ok)' : pct > 0 ? 'var(--warn)' : 'var(--muted)';
-    let html = esc(data.answer);
-    html += `<div class="meta"><span class="badge" style="background:${color};color:#0b1220">confiance ${pct}%</span></div>`;
+    let html = '';
+    // Disclose a shaky answer up front rather than let it read as a solid one.
+    if (data.uncertainty_note) html += `<div class="warnbox">⚠️ ${esc(data.uncertainty_note)}</div>`;
+    html += esc(data.answer);
+    html += `<div class="meta"><span class="badge" style="background:${color};color:#0b1220">confiance ${pct}%</span>`;
+    if (data.uncertainty_level && data.uncertainty_level !== 'low'){
+      const uc = data.uncertainty_level === 'high' ? 'var(--warn)' : '#d1a54a';
+      html += `<span class="badge" style="background:${uc};color:#0b1220" title="${esc((data.uncertainty_reasons||[]).join(', '))}">incertitude ${esc(data.uncertainty_level)}</span>`;
+    }
+    if (data.refused && data.refusal_reason){
+      html += `<span class="badge" style="background:var(--muted);color:#0b1220">${esc(data.refusal_reason)}</span>`;
+    }
+    html += `</div>`;
     if (data.citations && data.citations.length){
       html += `<details open><summary>${data.citations.length} source(s)</summary>`;
       for (const c of data.citations) html += `<div class="cite"><b>${esc(c.source)}</b><br>${esc(c.snippet)}</div>`;

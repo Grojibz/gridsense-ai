@@ -63,6 +63,37 @@ class Settings(BaseSettings):
     # How many chunks to retrieve per question.
     docrag_top_k: int = 4
 
+    # --- Upstream guardrails (applied to the query, before any token is spent) ---
+    # Hard cap on question length. A doc-QA question longer than this is abuse or a
+    # mistake, not a question; it is rejected rather than truncated.
+    docrag_max_input_tokens: int = 512
+    # Prompt-injection score (0..1) at or above which a query is rejected.
+    docrag_injection_threshold: float = 0.5
+    # Run spaCy NER as an extra PII detector on top of the regex patterns. Off by
+    # default: it needs the `en_core_web_sm` model and its false positives would
+    # redact legitimate technical terms out of the question.
+    docrag_pii_ner_enabled: bool = False
+    # Let the intent router hard-reject clearly out-of-scope queries.
+    docrag_intent_router_enabled: bool = True
+
+    # --- Downstream guardrails (applied to the model's output) -------------
+    # How many times to re-ask the model when its structured output fails validation.
+    docrag_output_retries: int = 1
+    # Fraction of answer sentences that must be lexically supported by the retrieved
+    # chunks. Below this the answer is disclosed as uncertain, not suppressed.
+    docrag_min_groundedness: float = 0.6
+
+    # --- Uncertainty disclosure --------------------------------------------
+    # Confidence below this (but at or above `docrag_min_confidence`) still answers,
+    # flagged as uncertain rather than passed off as solid.
+    docrag_uncertain_confidence: float = 0.6
+    # Best chunk relevance below this marks the answer uncertain. Calibrated against the
+    # golden set on nomic-embed-text, where top-1 relevance runs median 0.70 (min 0.54) for
+    # answerable queries and median 0.57 for unanswerable ones. 0.60 sits in that gap;
+    # raising it toward 0.65 would flag a quarter of good queries as weak. Re-measure when
+    # switching embedding provider — the scale is not comparable across models.
+    docrag_uncertain_relevance: float = 0.60
+
     # --- Datastores --------------------------------------------------------
     database_url: str = Field(
         default="postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense",

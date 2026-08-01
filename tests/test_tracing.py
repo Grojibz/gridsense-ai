@@ -90,10 +90,13 @@ def test_answered_call_records_retrieve_generation_update_and_flush() -> None:
     )
 
     assert lf.trace_inputs and lf.trace_inputs[0]["input"] == {"q": "q", "k": 4}
-    assert len(lf.trace_obj.spans) == 1  # retrieve span
+    assert [s["name"] for s in lf.trace_obj.spans] == ["retrieve", "output_validate"]
     assert len(lf.trace_obj.generations) == 1
     assert lf.trace_obj.generations[0]["model"] == "fake-model"
-    assert lf.trace_obj.updates[0]["metadata"]["guardrail"] == "answered"
+
+    metadata = lf.trace_obj.updates[0]["metadata"]
+    assert metadata["guardrail"] == "answered"
+    assert metadata["uncertainty_level"] in {"low", "medium", "high"}
     assert lf.flushed >= 1
 
 
