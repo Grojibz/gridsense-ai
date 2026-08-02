@@ -23,9 +23,11 @@ def get_embeddings(settings: Settings | None = None) -> Embeddings:
     if settings.llm_provider is LLMProvider.ollama:
         from langchain_ollama import OllamaEmbeddings
 
+        extra = {} if settings.ollama_num_gpu is None else {"num_gpu": settings.ollama_num_gpu}
         return OllamaEmbeddings(
             model=settings.ollama_embedding_model,
             base_url=settings.ollama_base_url,
+            **extra,
         )
 
     from langchain_openai import AzureOpenAIEmbeddings
@@ -49,10 +51,13 @@ def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0
     if settings.llm_provider is LLMProvider.ollama:
         from langchain_ollama import ChatOllama
 
+        extra = {} if settings.ollama_num_gpu is None else {"num_gpu": settings.ollama_num_gpu}
         return ChatOllama(
             model=settings.ollama_chat_model,
             base_url=settings.ollama_base_url,
             temperature=temperature,
+            num_ctx=settings.ollama_num_ctx,
+            **extra,
         )
 
     from langchain_openai import AzureChatOpenAI

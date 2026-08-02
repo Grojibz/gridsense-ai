@@ -233,16 +233,17 @@ on fork PRs, where the secrets aren't available.
 > Thresholds live in `src/gridsense/docrag/eval/thresholds.py`, not in the CI YAML, so
 > loosening the gate shows up in code review like any other change.
 
-**The four RAGAS metrics need a hosted model.** They use an LLM as judge, and the local
-models cannot serve that role — RAGAS chains several internal structured-output prompts per
-metric and a 7B model fails them, so all four come back NaN and the gate fails on coverage
-rather than reporting a bogus mean. Only `retrieval_recall` and `refusal_accuracy` are
-trustworthy offline; both are computed deterministically, with no judge involved.
+**The four RAGAS metrics need a hosted model to gate on.** A local judge does score them,
+but only on about half the items — RAGAS chains several internal structured-output prompts
+per metric — and a mean drawn from the half that happened to succeed is not a mean worth
+blocking a merge on. The three deterministic metrics (`retrieval_recall`,
+`refusal_accuracy`, `output_validity`) need no judge and are trustworthy offline.
 
-**[`EVALUATION.md`](EVALUATION.md) has the measured numbers, what runs where, and the three
-problems those numbers exposed** — an inflated `refusal_accuracy` (fixed), a chunk that had
-silently stopped being retrievable (fixed, and now guarded at ingest), and an unreliable
-structured-output schema on local models (open).
+**[`EVALUATION.md`](EVALUATION.md) has the measured numbers and the three problems they
+exposed** — an inflated `refusal_accuracy`, a chunk that had silently stopped being
+retrievable, and a run of apparent "model weakness" that turned out to be a GPU computing
+incorrectly. All three are fixed; the last one is worth reading for how convincingly a
+hardware fault disguises itself as a software one.
 
 ## Module B — DegradeML (classical ML + MLOps)
 

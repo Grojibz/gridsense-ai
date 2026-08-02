@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "llama3.2"
     ollama_embedding_model: str = "nomic-embed-text"
+    # Layers to offload to the GPU. ``None`` lets Ollama decide (the normal setting); 0
+    # forces CPU-only inference. Worth knowing that 0 is a real escape hatch: on a machine
+    # whose GPU computes incorrectly, Ollama returns fluent-looking garbage rather than an
+    # error — the same prompt yielding "@@@@@@" on GPU and a correct answer on CPU — and it
+    # corrupts embeddings the same way, silently, on write.
+    ollama_num_gpu: int | None = None
+    # Context window. Ollama defaults to 2048 regardless of what the model supports, which
+    # silently truncates a RAG prompt carrying several chunks.
+    ollama_num_ctx: int = 8192
 
     # --- DocRAG guardrails -------------------------------------------------
     # Minimum retrieval relevance (0..1) for a chunk to count as context. Below this

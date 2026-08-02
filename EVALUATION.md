@@ -8,67 +8,76 @@ Measured 2026-08-01 against the live local stack (pgvector + Ollama), 32-item go
 ## Short answer
 
 The eval reports seven metrics. **Three are computed deterministically and are trustworthy
-locally. Four require an LLM acting as a judge, and the local models cannot serve that
-role** — they need a hosted endpoint (the CI `ragas-gate` job is wired to Azure OpenAI).
+locally. Four go through an LLM judge, and a local model produces real numbers for them but
+not on enough items to gate on** — hence the CI `ragas-gate` job pointing at Azure OpenAI.
 
-The distinction is *not* local-vs-cloud. It is **whether the model can reliably emit
-structured output**. RAGAS chains several internal structured-output prompts per metric; a
-7B local model fails them. A strong enough local model would work in principle —
-`qwen2.5:7b-instruct` is not it, and neither is `llama3.2`.
+The distinction is *not* local-vs-cloud, and it is not that RAGAS "cannot run locally" —
+an earlier version of this document said exactly that, on measurements taken from a machine
+whose GPU was computing incorrectly (see problem #3). On sound hardware `llama3.2` scores
+all four metrics. What it does not do is score them *consistently*: RAGAS chains several
+internal structured-output prompts per metric, and the judge still fails on roughly half
+the items, which leaves the mean untrustworthy even though it is no longer empty.
 
 | Metric | Judged by | Runs locally? |
 |---|---|---|
 | `retrieval_recall` | string match vs. ground-truth chunks | ✅ yes, no judge involved |
 | `refusal_accuracy` | guardrail decision on the refusal reason | ✅ yes, no judge involved |
 | `output_validity` | did the model return a parseable object | ✅ yes, no judge involved |
-| `faithfulness` | RAGAS (LLM judge) | ❌ needs a hosted model |
-| `answer_relevancy` | RAGAS (LLM judge) | ❌ needs a hosted model |
-| `context_precision` | RAGAS (LLM judge) | ❌ needs a hosted model |
-| `context_recall` | RAGAS (LLM judge) | ❌ needs a hosted model |
+| `faithfulness` | RAGAS (LLM judge) | ⚠️ scores, 48% coverage |
+| `answer_relevancy` | RAGAS (LLM judge) | ⚠️ scores, 48% coverage |
+| `context_precision` | RAGAS (LLM judge) | ⚠️ scores, 43% coverage |
+| `context_recall` | RAGAS (LLM judge) | ⚠️ scores, 96% coverage |
 
 Both deterministic metrics still need the *pipeline* to run (so embeddings, and a chat
 model for generation). What they don't need is an LLM grading the output.
 
 ## What the local run produces
 
+`llama3.2`, CPU-only inference, sound index:
+
 ```
 items: 32  (answerable 23, unanswerable 9)
 
-faithfulness       0.000   [19/23 scored]
-answer_relevancy   0.000   [19/23 scored]
-context_precision  0.000   [19/23 scored]
-context_recall     0.000   [19/23 scored]
+faithfulness       0.689   [11/23 scored]
+answer_relevancy   0.589   [11/23 scored]
+context_precision  0.900   [10/23 scored]
+context_recall     0.752   [22/23 scored]
 retrieval_recall   0.957
-refusal_accuracy   0.444
-output_validity    0.344
+refusal_accuracy   0.778
+output_validity    1.000
 ```
 
-**The four zeros are not scores.** They are the answerable items that the pipeline refused,
-which are assigned 0.0 deterministically without calling the judge. Every item that
-*was* sent to the judge came back `RagasOutputParserException` → NaN → dropped. Coverage
-lands at 19/23 = 83% for the same reason the other numbers are bad: 19 of 23 answerable
-items never produced an answer to judge.
+**The three deterministic metrics are the trustworthy ones, and they are healthy.**
+`output_validity` at 1.000 means every one of the 32 items produced a parseable object —
+the schema-following problem was hardware, not the model. `refusal_accuracy` at 0.778 is
+7 of 9, and is now measuring guardrail decisions rather than crashes. Only 1 of the 9 is
+caught by the intent router; the rest fall through to the retrieval relevance gate, which
+is the designed behaviour but means the router does less work than it appears to.
 
-Read together, the three deterministic metrics say something specific: **retrieval works,
-and almost nothing else gets a chance to.** Only 4 of 23 answerable items were actually
-answered — 16 failed output parsing, 3 found no relevant context.
+**The four RAGAS scores are real but under-covered.** `context_recall` is credible at 96%
+coverage; the other three sit at 43–48%, meaning the judge failed on more than half the
+items and the mean is drawn from a biased remainder. The gate fails on coverage for exactly
+that reason, and would fail on `faithfulness` (0.689 < 0.80) and `answer_relevancy`
+(0.589 < 0.60) besides — but those two numbers should not be quoted as the system's real
+quality until they are measured against a judge that answers reliably.
 
-`refusal_accuracy` at 0.444 is the honest version of what used to read 1.000, and it is
-mostly a *symptom* of `output_validity`: 5 of the 9 unanswerable items were refused because
-the model produced garbage, not because a guardrail decided anything. Only 1 of the 9 was
-caught by the intent router.
-
-The gate handles this correctly — it fails on **coverage**, not just on the score:
+The gate reads both, and fails on **coverage** as well as on score:
 
 ```
 $ python eval/check_thresholds.py eval/results.json
-...
+[FAIL] faithfulness       0.689  (min 0.80)
+[  ok] context_precision  0.900  (min 0.70)
+[  ok] context_recall     0.752  (min 0.60)
+[FAIL] answer_relevancy   0.589  (min 0.60)
+[  ok] retrieval_recall   0.957  (min 0.90)
+[FAIL] refusal_accuracy   0.778  (min 0.80)
+[  ok] output_validity    1.000  (min 0.95)
   faithfulness: only 48% of items scored (need 80%) — the judge failed too often to trust the mean
 GATE_EXIT=1
 ```
 
-That guard exists precisely so a run like this cannot be mistaken for a passing one, and so
-a metric can't look healthy just because the judge quietly failed on most items.
+The coverage guard is what stops `context_precision = 0.900` from reading as good news: it
+is an average over 10 of 23 items, and the 13 the judge dropped are not a random sample.
 
 ## Known problems in the numbers above
 
@@ -87,9 +96,9 @@ a better-behaved one.
 Parse failures land in a new **`output_validity`** metric instead — the fraction of items
 where the model returned a parseable object at all — which is where they belong.
 
-The effect is large and in the honest direction: the same pipeline now reports **0.444**,
-because on the latest run 5 of the 9 unanswerable items were refused by a parse failure
-rather than by a decision.
+The fix earns its keep on broken hardware: while the GPU was corrupting completions, the
+old metric read 1.000 and the corrected one read 0.444, because 5 of the 9 refusals were
+crashes. On sound hardware the two converge — 0.778, all 7 of them real decisions.
 
 Still worth knowing: only 1 of the 9 is caught by the intent router (`oos-write-python`);
 the rest fall through to the retrieval relevance gate. That is the designed behaviour (the
@@ -135,27 +144,58 @@ Note on `k`: recall reaches 1.000 at k=6, but the corpus only has 6 chunks — k
 everything, which is not retrieval. `docrag_top_k` stays at 4 and the gate is set at 0.90
 against the measured 0.957.
 
-### 3. The structured-output schema is unreliable on local models (open)
+### 3. ~~The structured-output schema is unreliable on local models~~ — it was the GPU
 
-This is the dominant problem, and it masks everything else.
+**This entry was wrong twice before it was right**, and the wrong versions are kept because
+the false trail is the useful part.
 
-- `llama3.2` (the documented offline default) returns things like
-  `{"answer": "...usch moss ace ...@@@@"}` with `confidence` missing entirely, and
-  effectively never answers.
-- `qwen2.5:7b-instruct` is materially better and still fails most of the time.
+The symptom: the model returned fluent-looking garbage —
+`{"answer": "...usch moss ace 잡indsight interrupted@ Gone@@@@@@"}` — often enough that
+`output_validity` fell to 0.344, with only 4 of 23 answerable items answered. Every
+hypothesis fit the evidence and every one was wrong:
 
-**The failure rate is not stable, and two runs is not enough to quote one.** Across two
-runs on the same 32 items, `qwen2.5:7b-instruct` went from ~9 parse failures to 21 —
-`output_validity` 0.72 → 0.344. Ollama had been under sustained load for hours by the
-second run and the variable was not isolated, so treat both figures as "frequently, and
-unpredictably" rather than as a measured rate.
+1. *"llama3.2 is too weak to hold a schema."* But qwen2.5:7b failed too.
+2. *"Ollama defaults `num_ctx` to 2048 and the RAG prompt overflows it."* True about the
+   default, and worth fixing — but a 31-token prompt failed just as hard.
+3. *"qwen2.5:7b doesn't fit in VRAM and partial offload corrupts it."* It genuinely didn't
+   fit (2.4 GB resident of 5.4 GB) — but llama3.2, fully resident, failed identically.
 
-Before the P1 downstream guardrail existed, this propagated an `OutputParserException`
-straight out of `/ask` as a 500. It is now contained by a retry plus a deterministic
-fallback — the reason this eval run completed at all instead of dying on the first
-malformed completion. But *contained* is not *fixed*: the schema or the prompt needs work,
-or `docrag_output_retries` needs raising, or the offline default needs to be a model that
-can hold a schema.
+The actual cause, isolated by forcing CPU inference on the same model, same prompt, same
+server:
+
+| | output for `"Say OK"` |
+|---|---|
+| GPU | `-то fluoresiller expectationTickgowrud@@@` |
+| CPU (`num_gpu: 0`) | `OK. How can I assist you today?` |
+
+**The GPU was computing incorrectly.** On the 8-item probe: 0/8 on GPU, **8/8 on CPU**.
+llama3.2 holds the schema perfectly; nothing was wrong with `_LLMAnswer`, the prompt, or
+the model.
+
+This also closes problem #2 above: `nomic-embed-text` ran on the same GPU, so the corrupted
+index vectors and the garbage completions were **one root cause, not two**.
+
+**The transferable lesson: a faulty GPU does not raise. It returns confident nonsense.**
+Every layer above it — the model, the schema, the retriever, the eval — reports a plausible
+domain-level failure instead, and each one is a convincing place to spend an afternoon.
+When several independent components degrade at once, suspect the layer underneath them all
+before theorising about any of them. Forcing CPU inference is a two-minute test that would
+have ended this immediately.
+
+`OLLAMA_NUM_GPU=0` is the escape hatch; `OLLAMA_NUM_CTX` (default 8192 here) fixes the
+unrelated-but-real 2048 truncation.
+
+The instability that made this so hard to pin down is itself the tell. Across runs on the
+same 32 items, `output_validity` moved 0.72 → 0.344 → **1.000**, with no change to the
+schema, the prompt, or the model — only to whether the GPU was in the loop. A software
+defect does not drift like that.
+
+The P1 downstream guardrail is what made any of this survivable. Before it, a malformed
+completion propagated an `OutputParserException` straight out of `/ask` as a 500, and it
+killed the first eval run outright. With the retry and deterministic fallback in place, the
+pipeline degraded into clean refusals for hours on hardware that was returning noise, and
+kept producing usable telemetry the whole time. That was written as a guardrail against a
+weak model; it turned out to be a guardrail against a failing GPU.
 
 ## Relevance score distribution
 
