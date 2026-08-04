@@ -292,9 +292,19 @@ curl localhost:8000/predict -H 'content-type: application/json' \
 docker compose exec api python -m gridsense.degrade.monitor
 ```
 
+Step 3 ingests through the API container, which mounts `./data` read-only — the corpus is
+not baked into the image. Ingestion verifies itself: if any chunk fails to retrieve its own
+text it raises rather than leave a quietly unusable index.
+
+> **If answers come back as fluent nonsense, set `OLLAMA_NUM_GPU=0` and re-ingest.**
+> A GPU that computes incorrectly does not raise — Ollama returns confident garbage and
+> writes corrupted embeddings, and every layer above reports a plausible domain-level
+> failure instead. Verify with `ollama run llama3.2 "Say OK"`. See
+> [`EVALUATION.md`](EVALUATION.md) for how long that took to find.
+
 **Local dev** (without the API container): `make install` (or `pip install -e ".[docrag,degrade,dev]"`),
 then run the modules with your own interpreter and `uvicorn gridsense.api.main:app --reload`.
-`make help` lists the common tasks (`lint`, `test`, `ingest`, `train`, `eval`, `monitor`).
+`make help` lists the common tasks (`lint`, `test`, `ingest`, `train`, `monitor`, `eval-ragas`).
 
 Service URLs: API → `:8000` (**chat UI at `/`**, OpenAPI at `/docs`), MLflow → `:5000`,
 Langfuse → `:3000`. The chat page is a dependency-free DocRAG assistant that calls `/ask`.
