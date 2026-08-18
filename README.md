@@ -413,9 +413,23 @@ gating in separate steps so the report is still uploaded when the gate fails.
 ## Getting started
 
 The default setup runs **fully offline** using a local [Ollama](https://ollama.com) for both
-chat and embeddings. For the hosted path set `CHAT_PROVIDER=anthropic` (plus
-`ANTHROPIC_API_KEY`) and `EMBEDDING_PROVIDER=voyage` (plus `VOYAGE_API_KEY`); Azure OpenAI
-works for either half if you already have it.
+chat and embeddings.
+
+Because chat and embeddings are separate settings, they mix — and the mix is usually what you
+want:
+
+| Goal | Configuration |
+|---|---|
+| Everything offline, no key | the defaults in `.env.example` (Ollama for both) |
+| **Local development against Claude** | `CHAT_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, embeddings left on Ollama |
+| CI, or no local Ollama | `CHAT_PROVIDER=anthropic` + `EMBEDDING_PROVIDER=voyage` |
+
+The middle row is the one to reach for while developing. Keeping embeddings on Ollama means
+the relevance thresholds stay the ones they were calibrated against, costs nothing, and is
+not rate-limited — the only thing you gain by moving embeddings to a hosted provider is not
+needing Ollama at all, which is a CI problem rather than a local one.
+
+Azure OpenAI works for either half if you already have it.
 
 ```bash
 # 0. Prereqs: Docker, and Ollama with the models pulled (for the offline default)
@@ -441,7 +455,9 @@ curl localhost:8000/predict -H 'content-type: application/json' \
 docker compose exec api python -m gridsense.degrade.monitor
 
 # 6. Module C — the agent, which needs both modules to answer at all.
-#    Requires ANTHROPIC_API_KEY and CHAT_PROVIDER=anthropic; there is no offline path.
+#    Requires ANTHROPIC_API_KEY and CHAT_PROVIDER=anthropic. This is the one endpoint with
+#    no offline path: the tool runner is Anthropic-specific, and the code says so with an
+#    explicit error rather than degrading quietly. /ask and the MCP server both run offline.
 curl localhost:8000/agent -H 'content-type: application/json'   -d '{"question": "This pack runs at 33C, 1500 cycles over 600 days, DoD 0.7 at 1.0C. Will it still be serviceable in five years, and what does the documentation say the limit is?"}'
 ```
 
