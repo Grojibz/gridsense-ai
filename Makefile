@@ -2,7 +2,7 @@
 PY ?= python
 
 .PHONY: help install install-eval install-agent up down logs lint fmt test test-integration \
-        ingest ask-serve train eval eval-ragas eval-gate eval-agent eval-agent-gate \n        monitor build mcp
+        ingest ask-serve train eval eval-ragas eval-gate eval-agent eval-agent-gate calibrate \n        monitor build mcp
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -48,6 +48,9 @@ ingest:  ## Ingest sample docs into pgvector
 
 eval-ragas:  ## Run RAGAS over the golden dataset -> eval/results.json
 	$(PY) eval/run_ragas.py --out eval/results.json
+
+calibrate:  ## Measure the embedding model's relevance distribution (retrieval only)
+	$(PY) eval/calibrate_relevance.py
 
 eval-gate:  ## Fail if any RAGAS score is under its merge threshold
 	$(PY) eval/check_thresholds.py eval/results.json

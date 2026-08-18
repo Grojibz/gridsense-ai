@@ -21,8 +21,28 @@ if TYPE_CHECKING:  # imported lazily at runtime to keep base imports cheap
 
 
 def get_embeddings(settings: Settings | None = None) -> Embeddings:
-    """Return an embeddings client for the configured embedding provider."""
+    """Return an embeddings client for the configured embedding provider.
+
+    ⚠️ **The relevance scale is not comparable across embedding models.**
+    ``docrag_min_relevance`` and ``docrag_uncertain_relevance`` are calibrated against a
+    specific model; switching provider without re-measuring them silently changes what
+    counts as "relevant enough to answer from". Re-ingest *and* re-run
+    ``eval/calibrate_relevance.py`` after any change here.
+    """
     settings = settings or get_settings()
+
+    if settings.embedding_provider is EmbeddingProvider.voyage:
+        if not settings.voyage_api_key:
+            raise ValueError(
+                "embedding_provider=voyage but VOYAGE_API_KEY is unset. Get a key at "
+                "voyageai.com, or switch EMBEDDING_PROVIDER to azure|ollama."
+            )
+        from langchain_voyageai import VoyageAIEmbeddings
+
+        return VoyageAIEmbeddings(
+            model=settings.voyage_model,
+            voyage_api_key=settings.voyage_api_key,
+        )
 
     if settings.embedding_provider is EmbeddingProvider.ollama:
         from langchain_ollama import OllamaEmbeddings

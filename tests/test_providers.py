@@ -123,3 +123,34 @@ def test_built_client_drops_temperature_and_keeps_effort():
     assert model.top_k is None
     assert model.output_config == {"effort": "max"}
     assert not model.model_kwargs, "nothing should be left riding in model_kwargs"
+
+
+# --- embeddings -------------------------------------------------------------
+
+
+def test_voyage_is_an_embedding_provider_but_not_a_chat_one():
+    """Voyage does embeddings and nothing else; the enums say so rather than a runtime check."""
+    assert "voyage" in set(EmbeddingProvider)
+    assert "voyage" not in set(ChatProvider)
+
+
+def test_voyage_embeddings_build_with_the_configured_model():
+    from gridsense.providers import get_embeddings
+
+    embeddings = get_embeddings(
+        _settings(embedding_provider="voyage", voyage_api_key="pa-test", voyage_model="voyage-4")
+    )
+    assert embeddings.model == "voyage-4"
+
+
+def test_voyage_without_a_key_fails_with_an_actionable_message():
+    from gridsense.providers import get_embeddings
+
+    with pytest.raises(ValueError, match="VOYAGE_API_KEY"):
+        get_embeddings(_settings(embedding_provider="voyage", voyage_api_key=None))
+
+
+def test_the_default_embedding_model_is_the_one_with_a_free_tier():
+    """voyage-4-lite carries 200M free tokens; the older -lite variants carry none, and the
+    difference is invisible until a bill arrives."""
+    assert _settings().voyage_model == "voyage-4-lite"

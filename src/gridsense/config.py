@@ -27,9 +27,11 @@ class EmbeddingProvider(StrEnum):
 
     Deliberately narrower than :class:`ChatProvider`: Anthropic ships no embeddings API, so
     the two cannot be collapsed back into one setting. Running Claude for generation while
-    Ollama or Azure serves the vectors is the normal configuration, not a workaround.
+    something else serves the vectors is the normal configuration, not a workaround —
+    Voyage is the pairing Anthropic itself points at.
     """
 
+    voyage = "voyage"
     azure = "azure"
     ollama = "ollama"
 
@@ -67,6 +69,12 @@ class Settings(BaseSettings):
     #: Deprecated. Set both providers at once, as the pre-Claude releases did. Ignored for
     #: whichever of the two fields is also set explicitly.
     llm_provider: LLMProvider | None = None
+
+    # Voyage (used when embedding_provider == voyage). Anthropic's recommended embedding
+    # partner, and the only hosted option here that does not require a paid subscription:
+    # voyage-4-lite ships 200M free tokens, which this corpus will never exhaust.
+    voyage_api_key: str | None = None
+    voyage_model: str = "voyage-4-lite"
 
     # Anthropic (used when chat_provider == anthropic)
     anthropic_api_key: str | None = None
