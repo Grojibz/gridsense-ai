@@ -1,0 +1,234 @@
+name: Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always runs: catches a golden dataset that has drifted away from the corpus (a
+  # `must_contain` string edited out of data/docs makes the retrieval ground truth a lie)
+  # and verifies the gate logic itself. No LLM, no datastore, a few seconds.
+  golden-dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[docrag,agent,dev]"
+      # Deterministic and offline: dataset-vs-corpus drift, the gate logic itself, and the
+      # trajectory scoring (including that every tool an item names still exists).
+      - name: Validate golden dataset + thresholds + trajectories
+        run: >-
+          pytest -v
+          tests/test_golden_dataset.py
+          tests/test_thresholds.py
+          tests/test_ragas_eval.py
+          tests/test_agent_eval.py
+
+  # Decides once whether the credentialed gates can run at all, and publishes the answer as
+  # a job output.
+  #
+  # This exists because of where the check has to live. Guarding each *step* with an `if:`
+  # made the job run, skip everything inside it, and report **success** — a green check that
+  # evaluated nothing, which is exactly the reading the gates are meant to prevent. Gating
+  # the *job* on this output makes it report **Skipped** instead: visibly not-run rather
+  # than falsely passed.
+  #
+  # Note GitHub still treats a skipped required check as satisfied, so a green PR is not by
+  # itself evidence the gates ran. Read the check state, not just the tick. (To make a
+  # missing credential genuinely block your own PRs, `exit 1` in the credentials branch
+  # below — fork PRs are already excluded by the `if:` on the gate jobs.)
+  #
+  # The three outcomes are kept distinct in the log on purpose. "Turned off deliberately"
+  # and "could not run" are different facts about a PR, and deleting a secret to pause the
+  # gates would collapse them into one — the same ambiguity this job exists to remove.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      credentials: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check for eval credentials
+        id: check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          # Repository *variable*. Set EVAL_GATES=off to pause the credentialed gates
+          # without touching the secrets — e.g. while an embedding account is rate-limited.
+          EVAL_GATES: ${{ vars.EVAL_GATES }}
+          # Read only to catch the easy mistake of adding it under Secrets instead. A switch
+          # that silently does nothing is worse than no switch.
+          EVAL_GATES_AS_SECRET: ${{ secrets.EVAL_GATES }}
+        run: |
+          # Echo what was actually read. Diagnosing "I set the variable and nothing happened"
+          # should take one click, not a round trip.
+          echo "EVAL_GATES (repository variable) = '${EVAL_GATES:-<unset>}'"
+          echo "ANTHROPIC_API_KEY present        = $([ -n "${ANTHROPIC_API_KEY}" ] && echo yes || echo no)"
+          echo "VOYAGE_API_KEY present          = $([ -n "${VOYAGE_API_KEY}" ] && echo yes || echo no)"
+
+          if [ -z "${EVAL_GATES}" ] && [ -n "${EVAL_GATES_AS_SECRET}" ]; then
+            echo "::error::EVAL_GATES is set as a repository SECRET. It has to be a repository VARIABLE (Settings -> Secrets and variables -> Actions -> Variables tab); secrets are not readable through the vars context. The switch is being ignored."
+          fi
+
+          # Case- and whitespace-insensitive, and tolerant of the obvious synonyms: a switch
+          # that works for "off" but not "OFF" fails in the one situation it exists for.
+          switch=$(printf '%s' "${EVAL_GATES}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+          case "${switch}" in
+            off|false|0|no|disabled)
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::Eval gates are switched OFF by the EVAL_GATES repository variable. This PR has NOT been evaluated. Remove the variable to re-enable."
+              ;;
+            ""|on|true|1|yes|enabled)
+              if [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${VOYAGE_API_KEY}" ]; then
+                echo "available=true" >> "$GITHUB_OUTPUT"
+                echo "Both credentials present — the eval gates will run."
+              else
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                echo "::warning::ANTHROPIC_API_KEY (chat) and VOYAGE_API_KEY (embeddings) are both required. The eval gates are SKIPPED — this PR has NOT been evaluated."
+              fi
+              ;;
+            *)
+              # An unrecognised value is a typo, and guessing which way it was meant would
+              # silently pick a side. Fail loudly instead.
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "::error::EVAL_GATES has an unrecognised value '${EVAL_GATES}'. Use 'off' to pause the gates, or remove the variable to enable them."
+              exit 1
+              ;;
+          esac
+
+  # The RAG merge gate. Claude judges, Voyage embeds — the split is forced, not stylistic:
+  # Anthropic serves no embeddings API. Skipped on fork PRs, where GitHub deliberately
+  # withholds the secrets.
+  ragas-gate:
+    runs-on: ubuntu-latest
+    needs: [golden-dataset, preflight]
+    if: >-
+      needs.preflight.outputs.credentials == 'true' &&
+      (github.event.pull_request.head.repo.full_name == github.repository ||
+       github.event_name == 'push')
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gridsense
+          POSTGRES_PASSWORD: gridsense
+          POSTGRES_DB: gridsense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CHAT_PROVIDER: anthropic
+      EMBEDDING_PROVIDER: voyage
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-opus-5' }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      VOYAGE_MODEL: ${{ vars.VOYAGE_MODEL || 'voyage-4-lite' }}
+      DATABASE_URL: postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense
+      LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[docrag,eval]"
+
+      - name: Run RAGAS over the golden dataset
+        run: python eval/run_ragas.py --out eval/results.json
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-report
+          path: eval/results.json
+
+      # Blocks the merge when faithfulness / context_precision (and the deterministic
+      # retrieval + refusal metrics) fall below the thresholds in
+      # src/gridsense/docrag/eval/thresholds.py.
+      - name: Enforce thresholds
+        run: python eval/check_thresholds.py eval/results.json
+
+  # Scores the agent's *trajectory*: did it reach for the right tools, and avoid the wrong
+  # ones. A separate gate from ragas-gate because it measures a different thing — the same
+  # final sentence can come from sound tool use or from a guess that consulted nothing.
+  agent-gate:
+    runs-on: ubuntu-latest
+    needs: [golden-dataset, preflight]
+    if: >-
+      needs.preflight.outputs.credentials == 'true' &&
+      (github.event.pull_request.head.repo.full_name == github.repository ||
+       github.event_name == 'push')
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gridsense
+          POSTGRES_PASSWORD: gridsense
+          POSTGRES_DB: gridsense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CHAT_PROVIDER: anthropic
+      EMBEDDING_PROVIDER: voyage
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-opus-5' }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      VOYAGE_MODEL: ${{ vars.VOYAGE_MODEL || 'voyage-4-lite' }}
+      DATABASE_URL: postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[docrag,degrade,agent]"
+
+      # The agent reads the corpus through the same retriever as /ask, so the store has to
+      # be populated before any trajectory is scored.
+      - name: Ingest the corpus
+        run: python -m gridsense.docrag.ingest data/docs
+
+      # Scored and gated in separate steps so the report is still uploaded when the gate
+      # fails — that run is the one worth reading.
+      - name: Score agent trajectories
+        run: python eval/run_agent_eval.py --no-gate --out eval/agent_results.json
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-trajectory-report
+          path: eval/agent_results.json
+
+      # Blocks the merge when the agent stops reaching for the right tools, or starts
+      # reaching for the wrong ones. Thresholds live in src/gridsense/agent/eval.py.
+      - name: Enforce thresholds
+        run: python eval/check_agent_thresholds.py eval/agent_results.json

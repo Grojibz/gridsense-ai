@@ -1,4 +1,6 @@
-"""Eval harness: LLM-as-judge groundedness / answer-relevance / citation-correctness.
+"""Eval harness for DocRAG: the golden dataset, RAGAS scoring, and the merge gate.
 
-Placeholder for M2; runs against a small labelled question set in CI.
+:mod:`golden` loads the labelled set and computes deterministic retrieval recall,
+:mod:`ragas_eval` runs the real chain over it and scores the answers, and
+:mod:`thresholds` holds the gate that CI fails on.
 """

@@ -18,7 +18,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gridsense}
       POSTGRES_DB: ${POSTGRES_DB:-gridsense}
     ports:
-      - "5432:5432"
+      # Host port is overridable so the stack can coexist with another project already
+      # holding 5432. Only the host side moves — everything inside the compose network
+      # still talks to postgres:5432 — so if you change it, change DATABASE_URL to match.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -92,10 +95,24 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      # Defaults keep the stack fully offline. Set CHAT_PROVIDER=anthropic (plus a key)
+      # for Claude; embeddings stay on Ollama either way — Anthropic has no embeddings API.
+      CHAT_PROVIDER: ${CHAT_PROVIDER:-ollama}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      VOYAGE_MODEL: ${VOYAGE_MODEL:-voyage-4-lite}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-high}
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      # Ollama defaults num_ctx to 2048 whatever the model supports, silently truncating
+      # a RAG prompt that carries several chunks.
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      # Must reach the container too: a host GPU that computes incorrectly produces
+      # fluent garbage and corrupted embeddings, and the API would inherit both.
+      OLLAMA_NUM_GPU: ${OLLAMA_NUM_GPU:-}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gridsense}:${POSTGRES_PASSWORD:-gridsense}@postgres:5432/${POSTGRES_DB:-gridsense}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       LANGFUSE_HOST: http://langfuse:3000
@@ -103,6 +120,11 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-gridsense-dev}
     ports:
       - "8000:8000"
+    volumes:
+      # The corpus is deliberately not baked into the image (`data` is in .dockerignore);
+      # mounting it read-only keeps the image lean and lets `docker compose exec api
+      # python -m gridsense.docrag.ingest data/docs` work against whatever is on the host.
+      - ./data:/app/data:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

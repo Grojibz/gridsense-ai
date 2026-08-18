@@ -34,7 +34,7 @@ jobs:
             pip install -r requirements.txt
             pip install ruff pytest pytest-cov
           elif [ -f pyproject.toml ]; then
-            pip install -e ".[docrag,degrade,dev]"
+            pip install -e ".[docrag,degrade,agent,dev]"
           else
             echo "No requirements.txt or pyproject.toml found" >&2
             exit 1

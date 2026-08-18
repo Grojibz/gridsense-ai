@@ -26,6 +26,21 @@ SUPPORTED_SUFFIXES = TEXT_SUFFIXES | PDF_SUFFIXES
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
+#: A chunk queried with its own text must score at least this against itself. A correctly
+#: stored vector scores ~1.0; anything this low means the stored vector is not the
+#: embedding of the text next to it.
+SELF_RETRIEVAL_FLOOR = 0.95
+
+
+class IndexVerificationError(RuntimeError):
+    """Raised when a freshly written index fails its self-retrieval check."""
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        super().__init__(
+            f"{len(problems)} chunk(s) failed index verification:\n  " + "\n  ".join(problems)
+        )
+
 
 def _read_pdf(path: Path) -> str:
     from pypdf import PdfReader
@@ -83,6 +98,50 @@ def chunk_documents(
     return splitter.split_documents(docs)
 
 
+def verify_index(
+    chunks: list[Document],
+    *,
+    vectorstore: PGVector,
+    min_self_score: float = SELF_RETRIEVAL_FLOOR,
+) -> list[str]:
+    """Check every chunk retrieves *itself* when queried with its own text.
+
+    Returns a list of human-readable problems (empty means the index is sound).
+
+    This exists because a bad vector is otherwise completely silent. One chunk in this
+    corpus was once stored with a vector scoring 0.331 against a query its correct
+    embedding scores 0.708 on — the chunk simply stopped being retrievable, no error
+    anywhere, and the symptom looked exactly like "the embedding model is weak". A chunk
+    that cannot retrieve itself is the cheapest possible tripwire for that.
+
+    It is not a hypothetical: this check caught a *second* occurrence within an hour of
+    being written, on an Ollama instance under concurrent load. On a sound index every
+    chunk self-retrieves at exactly 1.0, so the floor has plenty of headroom and a failure
+    here means the stored vector is genuinely not the embedding of its text.
+    """
+    problems: list[str] = []
+    for chunk in chunks:
+        source = chunk.metadata.get("source", "unknown")
+        head = " ".join(chunk.page_content.split())[:60]
+        hits = vectorstore.similarity_search_with_relevance_scores(chunk.page_content, k=1)
+        if not hits:
+            problems.append(f"{source}: chunk retrieved nothing ({head!r})")
+            continue
+        best, score = hits[0]
+        # Identity first: "a sibling chunk won" is the useful diagnosis, and reporting the
+        # score instead sends you chasing a threshold when the vector is the problem.
+        if best.page_content != chunk.page_content:
+            problems.append(
+                f"{source}: another chunk outranks it on its own text "
+                f"(score {score:.3f}) ({head!r})"
+            )
+        elif score < min_self_score:
+            problems.append(
+                f"{source}: self-retrieval score {score:.3f} < {min_self_score} ({head!r})"
+            )
+    return problems
+
+
 def ingest_path(
     path: str | Path,
     *,
@@ -90,8 +149,13 @@ def ingest_path(
     reset: bool = True,
     chunk_size: int = CHUNK_SIZE,
     chunk_overlap: int = CHUNK_OVERLAP,
+    verify: bool = True,
 ) -> int:
-    """Ingest all supported docs under ``path``; return the number of chunks stored."""
+    """Ingest all supported docs under ``path``; return the number of chunks stored.
+
+    With ``verify`` (the default) the freshly written index is checked chunk by chunk and
+    :class:`IndexVerificationError` is raised if any chunk cannot retrieve itself.
+    """
     if vectorstore is None:
         from gridsense.docrag.retriever import get_vectorstore
 
@@ -109,6 +173,10 @@ def ingest_path(
         vectorstore.delete_collection()
         vectorstore.create_collection()
     vectorstore.add_documents(chunks)
+
+    if verify and (problems := verify_index(chunks, vectorstore=vectorstore)):
+        raise IndexVerificationError(problems)
+
     return len(chunks)
 
 
@@ -120,10 +188,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Append to the existing collection instead of resetting it first.",
     )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip the post-ingest self-retrieval check (not recommended).",
+    )
     args = parser.parse_args(argv)
 
     n_files = len(load_documents(args.path))
-    n_chunks = ingest_path(args.path, reset=not args.no_reset)
+    try:
+        n_chunks = ingest_path(args.path, reset=not args.no_reset, verify=not args.no_verify)
+    except IndexVerificationError as exc:
+        print(f"Ingest FAILED verification.\n{exc}", file=sys.stderr)
+        return 1
     print(f"Ingested {n_files} document(s) -> {n_chunks} chunk(s) into the DocRAG store.")
     return 0
 

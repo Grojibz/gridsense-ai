@@ -26,6 +26,8 @@ dependencies = [
 docrag = [
     "langchain-core>=0.3",
     "langchain-text-splitters>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-voyageai>=0.4",
     "langchain-openai>=0.2",
     "langchain-ollama>=0.2",
     "langchain-postgres>=0.0.12",
@@ -45,6 +47,21 @@ degrade = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
     "evidently>=0.4,<0.5",
+]
+# Agentic surface — the native Anthropic SDK (tool runner, prompt caching, effort,
+# refusal handling) plus the MCP server. Kept out of `docrag` so the RAG image stays lean;
+# LangChain is the abstraction for the chain, the raw SDK is what the agent needs.
+agent = [
+    "anthropic>=0.116",
+    "mcp>=2.0",
+]
+# Eval harness — RAGAS + its dataset/arrow stack. Kept out of `docrag` so the API image
+# and the unit-test CI job stay lean; only the eval workflow installs it.
+eval = [
+    "ragas>=0.4,<0.5",
+    # ragas still imports the pre-1.0 `langchain_community.chat_models.vertexai` path,
+    # which langchain-community 0.4 removed. 0.3.x is compatible with langchain-core 1.x.
+    "langchain-community>=0.3.31,<0.4",
 ]
 dev = [
     "ruff>=0.4",

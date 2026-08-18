@@ -1,13 +1,24 @@
-"""The DocRAG chain: retrieve -> ground -> structured, cited answer, with tracing.
+"""The DocRAG chain: guard -> retrieve -> ground -> structured, cited answer, with tracing.
 
-Returns a :class:`RagAnswer` of ``{answer, citations[], confidence}``. The model is asked
-to answer *only* from the retrieved context and to reference sources by their context index;
-citations are then rebuilt deterministically from the retrieved chunks, so a citation can
-never point at a document that wasn't actually retrieved.
+Returns a :class:`RagAnswer`. The model is asked to answer *only* from the retrieved
+context and to reference sources by their context index; citations are then rebuilt
+deterministically from the retrieved chunks, so a citation can never point at a document
+that wasn't actually retrieved.
 
-Guardrails (M2): retrieved chunks below a relevance threshold are dropped, and if nothing
-relevant remains — or the model's self-reported confidence is too low — DocRAG refuses with
-an explicit "I don't know" instead of guessing.
+Guardrails run on both sides of the model (:mod:`gridsense.docrag.guardrails`):
+
+- **Upstream** — the query is length-capped, scanned for prompt injection, routed for
+  intent, and PII-scrubbed *before* it reaches the embedder, the model, or the trace store.
+- **Retrieval** — chunks below a relevance threshold are dropped; if nothing relevant
+  remains, DocRAG refuses rather than answer from noise.
+- **Downstream** — structured output that fails validation is retried once and then falls
+  back deterministically instead of raising; the answer is checked sentence-by-sentence
+  against the retrieved chunks; and confidence, retrieval strength and grounding are
+  combined into an explicit uncertainty verdict.
+
+A shaky answer is *disclosed*, not suppressed: ``uncertainty_level`` and
+``uncertainty_reasons`` say why, so the caller never has to guess whether a fluent answer
+was actually well supported.
 
 Every call is traced to Langfuse when keys are configured (prompt, retrieved chunks +
 relevance scores, latency, cost, and the guardrail decision). Tracing is best-effort: any
@@ -23,6 +34,15 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel, Field
 
 from gridsense.config import Settings, get_settings
+from gridsense.docrag.guardrails import (
+    INVALID_OUTPUT,
+    PROVIDER_ERROR,
+    UncertaintyLevel,
+    assess_uncertainty,
+    check_input,
+    groundedness,
+    invoke_structured,
+)
 from gridsense.observability import get_langfuse
 
 if TYPE_CHECKING:
@@ -32,6 +52,18 @@ if TYPE_CHECKING:
     from langfuse import Langfuse
 
 NO_ANSWER = "I don't know — I couldn't find relevant information in the documents."
+#: Distinct from NO_ANSWER: the documents may well hold the answer, but the model failed to
+#: return a usable object. Saying so beats implying the corpus is empty on the subject.
+UNUSABLE_OUTPUT = (
+    "I couldn't produce a reliable answer just now — the model's response was malformed. "
+    "Please try again."
+)
+#: Distinct again: there was no response at all. Telling someone to try again when the
+#: account has no credit balance, or the key is wrong, is advice that cannot work.
+PROVIDER_UNAVAILABLE = (
+    "I couldn't reach the language model — the request failed before it produced anything. "
+    "This is a configuration or account problem, not a question you can rephrase."
+)
 
 #: Sentinel so callers can pass ``langfuse_client=None`` to disable tracing explicitly,
 #: while the default (unset) builds a client from settings.
@@ -63,6 +95,29 @@ class RagAnswer(BaseModel):
     answer: str
     citations: list[Citation] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, description="0..1 grounding confidence.")
+    refused: bool = Field(
+        default=False,
+        description="True when a guardrail declined to answer. Check this rather than "
+        "string-matching the answer text.",
+    )
+    refusal_reason: str | None = Field(
+        default=None, description="Which guardrail refused (e.g. no_relevant_context)."
+    )
+    uncertainty_level: UncertaintyLevel = Field(
+        default="low", description="How much to trust this answer: low | medium | high."
+    )
+    uncertainty_reasons: list[str] = Field(
+        default_factory=list, description="Signals behind the uncertainty verdict."
+    )
+    uncertainty_note: str = Field(
+        default="", description="User-facing caveat to render with the answer."
+    )
+    groundedness: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of answer sentences lexically supported by the cited chunks.",
+    )
 
 
 class _LLMAnswer(BaseModel):
@@ -91,6 +146,31 @@ def format_context(docs: list[Document]) -> str:
         source = doc.metadata.get("source", "unknown")
         blocks.append(f"[{i}] (source: {source})\n{doc.page_content}")
     return "\n\n".join(blocks)
+
+
+def retrieve_context(
+    question: str,
+    *,
+    vectorstore: PGVector,
+    k: int,
+    settings: Settings,
+) -> tuple[list[tuple[Document, float]], list[float]]:
+    """Retrieve the top-``k`` chunks and drop those below the relevance floor.
+
+    Returns ``(kept, all_scores)`` — the surviving ``(document, score)`` pairs, and the
+    relevance scores of *all* ``k`` candidates. Keeping the kept chunks paired with their
+    own scores is deliberate: zipping a filtered document list against an unfiltered score
+    list silently misattributes scores as soon as one chunk is dropped. The full score list
+    is what tells you a query fell off the corpus entirely.
+    """
+    pairs = vectorstore.similarity_search_with_relevance_scores(question, k=k)
+    scores = [round(float(score), 4) for _, score in pairs]
+    kept = [
+        (doc, round(float(score), 4))
+        for doc, score in pairs
+        if score >= settings.docrag_min_relevance
+    ]
+    return kept, scores
 
 
 def _build_citations(llm_sources: list[int], docs: list[Document]) -> list[Citation]:
@@ -129,11 +209,31 @@ def _finalize_trace(
                 "confidence": result.confidence,
                 "num_citations": len(result.citations),
             },
-            metadata={"guardrail": reason, "relevance_scores": scores},
+            metadata={
+                "guardrail": reason,
+                "relevance_scores": scores,
+                "refused": result.refused,
+                "uncertainty_level": result.uncertainty_level,
+                "uncertainty_reasons": result.uncertainty_reasons,
+                "groundedness": result.groundedness,
+            },
         )
     )
     if client is not None:
         _safe(client.flush)
+
+
+def _refuse(reason: str, *, message: str = NO_ANSWER, confidence: float = 0.0) -> RagAnswer:
+    """Build the refusal for ``reason``, always flagged high-uncertainty and self-describing."""
+    return RagAnswer(
+        answer=message,
+        citations=[],
+        confidence=confidence,
+        refused=True,
+        refusal_reason=reason,
+        uncertainty_level="high",
+        uncertainty_reasons=[reason],
+    )
 
 
 def answer_question(
@@ -144,17 +244,53 @@ def answer_question(
     k: int | None = None,
     settings: Settings | None = None,
     langfuse_client: Langfuse | None = _UNSET,
+    on_context: Callable[[list[tuple[Document, float]]], None] | None = None,
 ) -> RagAnswer:
     """Answer ``question`` from the document store, returning a cited, scored answer.
 
     ``vectorstore``, ``chat_model`` and ``langfuse_client`` can be injected (e.g. fakes in
     tests, or ``langfuse_client=None`` to disable tracing); when omitted they default to the
     real pgvector store, the configured provider, and a Langfuse client built from settings.
+
+    ``on_context`` is called with the chunks that survived the relevance gate — exactly what
+    the model is about to see. The eval harness uses it to score the answer against the real
+    prompt context; re-running retrieval afterwards is not equivalent, because a chunk
+    sitting on the relevance threshold can fall on either side of it between two calls.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
     settings = settings or get_settings()
     k = k if k is not None else settings.docrag_top_k
+    if langfuse_client is _UNSET:
+        langfuse_client = get_langfuse(settings)
+
+    # --- Upstream guardrails ------------------------------------------------
+    # Runs before the trace is opened and before anything is constructed, so a rejected
+    # query costs no embedding call, no LLM call, and never puts raw PII (or an injection
+    # payload) into the trace store.
+    verdict = check_input(question, settings)
+    question = verdict.query
+
+    trace = None
+    if langfuse_client is not None:
+        trace = _safe(
+            lambda: langfuse_client.trace(
+                name="docrag.ask",
+                input={"q": question, "k": k},
+                metadata={
+                    "intent": verdict.intent,
+                    "input_tokens": verdict.estimated_tokens,
+                    "injection_score": verdict.injection_score,
+                    "pii_labels": verdict.pii_labels,
+                },
+            )
+        )
+
+    if not verdict.allowed:
+        result = _refuse(verdict.reason, message=verdict.message)
+        _finalize_trace(trace, langfuse_client, result, reason=verdict.reason, scores=[])
+        return result
+
     if vectorstore is None:
         from gridsense.docrag.retriever import get_vectorstore
 
@@ -163,19 +299,13 @@ def answer_question(
         from gridsense.providers import get_chat_model
 
         chat_model = get_chat_model()
-    if langfuse_client is _UNSET:
-        langfuse_client = get_langfuse(settings)
-
-    trace = None
-    if langfuse_client is not None:
-        trace = _safe(
-            lambda: langfuse_client.trace(name="docrag.ask", input={"q": question, "k": k})
-        )
 
     # --- Retrieve + relevance gate ----------------------------------------
-    pairs = vectorstore.similarity_search_with_relevance_scores(question, k=k)
-    scores = [round(float(score), 4) for _, score in pairs]
-    docs = [doc for doc, score in pairs if score >= settings.docrag_min_relevance]
+    kept, scores = retrieve_context(question, vectorstore=vectorstore, k=k, settings=settings)
+    docs = [doc for doc, _ in kept]
+    kept_scores = [score for _, score in kept]
+    if on_context is not None:
+        on_context(kept)
 
     if trace is not None:
         _safe(
@@ -190,7 +320,7 @@ def answer_question(
         )
 
     if not docs:
-        result = RagAnswer(answer=NO_ANSWER, citations=[], confidence=0.0)
+        result = _refuse("no_relevant_context")
         _finalize_trace(trace, langfuse_client, result, reason="no_relevant_context", scores=scores)
         return result
 
@@ -200,33 +330,48 @@ def answer_question(
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"Context passages:\n\n{context}\n\nQuestion: {question}"),
     ]
-    structured = chat_model.with_structured_output(_LLMAnswer)
 
     # Time the generation ourselves and record it as a Langfuse generation observation.
     # (We don't use Langfuse's LangChain callback: its v2 integration imports the legacy
     # `langchain.callbacks` module, which LangChain v1 removed.)
     started = datetime.now()
-    llm_out: _LLMAnswer = structured.invoke(messages)
+    llm_out, attempts, failure = invoke_structured(
+        chat_model, _LLMAnswer, messages, retries=settings.docrag_output_retries
+    )
     ended = datetime.now()
 
     if trace is not None:
-        model_label = getattr(chat_model, "model", None) or settings.llm_provider.value
+        model_label = getattr(chat_model, "model", None) or settings.chat_provider.value
         _safe(
             lambda: trace.generation(
                 name="generate",
                 model=model_label,
                 input=[{"role": m.type, "content": m.content} for m in messages],
-                output=llm_out.model_dump(),
+                output=llm_out.model_dump() if llm_out is not None else None,
+                metadata={"attempts": attempts, "schema_valid": llm_out is not None},
                 start_time=started,
                 end_time=ended,
             )
         )
 
+    # --- Output schema gate ------------------------------------------------
+    if llm_out is None:
+        # Fall back deterministically rather than propagate the exception out of the API —
+        # but say which of the two failures it was. "The model answered badly" and "the
+        # model was never reached" need different words and different next steps.
+        if failure == PROVIDER_ERROR:
+            result = _refuse(PROVIDER_ERROR, message=PROVIDER_UNAVAILABLE)
+            _finalize_trace(trace, langfuse_client, result, reason=PROVIDER_ERROR, scores=scores)
+            return result
+        result = _refuse(INVALID_OUTPUT, message=UNUSABLE_OUTPUT)
+        _finalize_trace(trace, langfuse_client, result, reason=INVALID_OUTPUT, scores=scores)
+        return result
+
     confidence = max(0.0, min(1.0, llm_out.confidence))
 
     # --- Confidence gate ---------------------------------------------------
     if confidence < settings.docrag_min_confidence:
-        result = RagAnswer(answer=NO_ANSWER, citations=[], confidence=confidence)
+        result = _refuse("low_confidence", confidence=confidence)
         _finalize_trace(trace, langfuse_client, result, reason="low_confidence", scores=scores)
         return result
 
@@ -236,6 +381,41 @@ def answer_question(
         # fall back to citing the retrieved passages it was grounded on.
         citations = _build_citations(list(range(1, len(docs) + 1)), docs)
 
-    result = RagAnswer(answer=llm_out.answer, citations=citations, confidence=confidence)
+    # --- Faithfulness post-check + uncertainty disclosure -------------------
+    grounding = groundedness(
+        llm_out.answer,
+        [d.page_content for d in docs],
+        support_threshold=settings.docrag_min_groundedness,
+    )
+    uncertainty = assess_uncertainty(
+        confidence=confidence,
+        relevance_scores=kept_scores,
+        grounding=grounding.ratio,
+        settings=settings,
+    )
+
+    if trace is not None:
+        _safe(
+            lambda: trace.span(
+                name="output_validate",
+                input={"attempts": attempts},
+                output={
+                    "groundedness": grounding.ratio,
+                    "unsupported": grounding.unsupported,
+                    "uncertainty": uncertainty.level,
+                    "reasons": uncertainty.reasons,
+                },
+            ).end()
+        )
+
+    result = RagAnswer(
+        answer=llm_out.answer,
+        citations=citations,
+        confidence=confidence,
+        uncertainty_level=uncertainty.level,
+        uncertainty_reasons=uncertainty.reasons,
+        uncertainty_note=uncertainty.note,
+        groundedness=grounding.ratio,
+    )
     _finalize_trace(trace, langfuse_client, result, reason="answered", scores=scores)
     return result

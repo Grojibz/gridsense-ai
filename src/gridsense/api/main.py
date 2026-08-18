@@ -4,8 +4,8 @@ Run locally with::
 
     uvicorn gridsense.api.main:app --reload
 
-Exposes ``/health``, the DocRAG ``/ask`` endpoint (M1), and the DegradeML ``/predict``
-endpoint (M4).
+Exposes ``/health``, the DocRAG ``/ask`` endpoint (M1), the DegradeML ``/predict``
+endpoint (M4), and the Claude tool-use ``/agent`` endpoint (M8) that spans both.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from gridsense import __version__
+from gridsense.api.routes_agent import router as agent_router
 from gridsense.api.routes_ask import router as ask_router
 from gridsense.api.routes_chat import router as chat_router
 from gridsense.api.routes_predict import router as predict_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chat_router)
     app.include_router(ask_router)
+    app.include_router(agent_router)
     app.include_router(predict_router)
     return app
 
