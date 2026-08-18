@@ -43,7 +43,7 @@ a model that works once.
 | **Agent evaluation** | Trajectory metrics (`trajectory_accuracy`, `tool_precision`) gated in CI beside the RAG metrics |
 | **GenAI orchestration** | RAG pipeline built with **LangChain** (retrievers, chains, structured output) |
 | **Vector search** | **pgvector** on Postgres; pluggable to Pinecone |
-| **Cloud AI** | **Anthropic** (default), **Azure OpenAI**, and a local **Ollama** fallback — chat and embeddings configured separately |
+| **Cloud AI** | **Claude** for chat, **Voyage** for embeddings (Anthropic's own recommendation, since they ship none), **Azure OpenAI** and local **Ollama** as alternatives |
 | **LLM observability** | Tracing, latency and cost dashboards via **Langfuse** |
 | **GenAI optimisation** | Prompt templates, retrieval tuning, and an **eval harness** (LLM-as-judge + groundedness) |
 | **RAG evaluation** | Curated **golden dataset** + **RAGAS** metrics, enforced as a **merge gate** in CI |
@@ -95,10 +95,21 @@ a model that works once.
 Everything runs locally via `docker-compose` (Postgres+pgvector, MLflow, Langfuse).
 
 Chat and embeddings are configured **separately** — `CHAT_PROVIDER` (`anthropic` | `azure` |
-`ollama`) and `EMBEDDING_PROVIDER` (`azure` | `ollama`). That is not symmetry for its own
-sake: Anthropic serves no embeddings API, so the default arrangement — Claude generating,
-Ollama embedding — cannot be expressed with a single provider field. The legacy
-`LLM_PROVIDER` still sets both at once.
+`ollama`) and `EMBEDDING_PROVIDER` (`voyage` | `azure` | `ollama`). That is not symmetry for
+its own sake: Anthropic serves no embeddings API, so the default arrangement — Claude
+generating, something else embedding — cannot be expressed with a single provider field. The
+legacy `LLM_PROVIDER` still sets both at once, except for `anthropic`, which is rejected
+rather than guessing an embedding provider on your behalf.
+
+**Voyage is the hosted embedding default.** It is what Anthropic points at for embeddings,
+and `voyage-4-lite` ships 200M free tokens — this corpus will not exhaust them. Ollama stays
+the fully-offline path.
+
+> ⚠️ **The relevance scale is not comparable across embedding models.**
+> `docrag_min_relevance` and `docrag_uncertain_relevance` are percentile cuts through one
+> model's similarity distribution. Carrying them across a provider switch silently redefines
+> what counts as relevant enough to answer from. Run `make calibrate` (retrieval only, no
+> chat tokens) after any change to `EMBEDDING_PROVIDER`, then confirm with the full gate.
 
 ---
 
@@ -117,6 +128,7 @@ gridsense-ai/
 ├── .mcp.json                   # MCP server registration for Claude Code / Desktop
 ├── .claude/skills/             # agent skills, versioned with the repo
 ├── eval/
+│   ├── calibrate_relevance.py  # measure an embedding model's relevance distribution
 │   ├── golden_dataset.json     # curated Q&A + retrieval ground truth
 │   ├── run_ragas.py            # run RAGAS over the golden set -> results.json
 │   ├── check_thresholds.py     # exit non-zero if a score is under its gate

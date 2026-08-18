@@ -101,9 +101,13 @@ is an average over 10 of 23 items, and the 13 the judge dropped are not a random
 
 ## Known problems in the numbers above
 
-Three problems, in the order they were found. Two are now fixed; the third is open. None
-were bugs in the eval harness — the harness is what surfaced all three, which is the
-argument for having built it.
+Five problems, in the order they were found. Four are fixed; the third is open.
+
+The first three were surfaced *by* the eval harness, which is the argument for having built
+it. The last two were faults in the harness's own plumbing, and are the more uncomfortable
+ones: a gate that had never executed, and then a gate that reported success without
+evaluating anything. A measurement you never take and a measurement that always passes fail
+in the same direction.
 
 ### 1. ~~`refusal_accuracy = 1.000` is inflated~~ — fixed
 
@@ -217,6 +221,81 @@ pipeline degraded into clean refusals for hours on hardware that was returning n
 kept producing usable telemetry the whole time. That was written as a guardrail against a
 weak model; it turned out to be a guardrail against a failing GPU.
 
+### 4. ~~The eval workflow had never run~~ — fixed
+
+The first pull request on this repository turned three checks red at once:
+`lint-and-test (3.11)`, `lint-and-test (3.12)` and `golden-dataset`. All three passed
+locally. Two independent faults, and the interesting part is why neither had ever shown up.
+
+**Why nothing had caught them.** `eval.yml` triggers on `pull_request` or a push to `main`.
+Work had been happening on a feature branch, with no PR open, so **the workflow had never
+executed once since it was written.** A gate that has never run is not a gate; it is a file
+that looks like one. The CI badge in the README was green throughout, because `ci.yml` runs
+on the same triggers and had last succeeded on `main`, before any of this code existed.
+
+**Fault one — the obvious one.** `ci.yml` installed `.[docrag,degrade,dev]`. `main.py` had
+gained an import of `routes_agent`, which imports the Anthropic SDK, so the whole suite
+failed at collection on a missing `anthropic`. The sibling workflow had been updated for
+the new extra and this one had not. Ordinary oversight, caught the moment CI ran.
+
+**Fault two — the one worth keeping.** `golden-dataset` failed on `ModuleNotFoundError: No
+module named 'pandas'` — in a job that scores a JSON dataset and some threshold arithmetic,
+and touches no dataframe anywhere. The chain:
+
+```
+conftest.py  ->  gridsense.api.main  ->  routes_predict  ->  degrade.serve  ->  import pandas
+```
+
+`conftest.py` imported `create_app` at module level. pytest loads `conftest.py` for the
+whole directory before collecting *any* test, so importing the application there pulled the
+entire dependency graph — FastAPI, the ML stack, MLflow — into every job, regardless of
+what that job actually ran. The deterministic job needed scikit-learn installed to collect
+a test that scores a dictionary.
+
+This was latent from the day the job was written, and it would have stayed latent: it is
+invisible in any environment where everything happens to be installed.
+
+**Why the local test run could not have found it.** Both faults were masked by exactly the
+thing that makes local testing convenient — a development environment with every extra
+installed. `pytest` passed locally on all 256 tests while two CI jobs were structurally
+incapable of collecting a single one. Reading the workflow files did not settle it either:
+the first two hypotheses from tracing imports by hand were both incomplete. What settled it
+was building **one clean virtualenv per job, with that job's exact extras**, and running
+that job's exact command:
+
+```
+.[docrag,agent,dev]           golden-dataset   ModuleNotFoundError: pandas
+.[docrag,degrade,agent,dev]   lint-and-test    ModuleNotFoundError: anthropic
+```
+
+Two minutes of setup turned a guess into a diagnosis.
+
+**The fix.** Fault one: add the `agent` extra to `ci.yml`. Fault two: move both imports
+*inside* the `client` fixture, so the application graph is imported by the tests that use
+it and by nothing else. Adding `degrade` to the job would also have made it pass, at the
+price of installing scikit-learn, MLflow and Evidently to run 103 tests that never touch
+them — a symptom fix that makes every future job slower.
+
+**The general lesson.** A CI job's install list is part of its contract, and the only
+environment that tests that contract is a clean one. If a job has never run, treat it as
+untested code, because that is what it is.
+
+### 5. A skipped gate reported as a passing one — fixed
+
+Immediately after the above, the two credentialed gates went **green** without evaluating
+anything. The credential check was a *step*-level `if:`, so the job started, skipped every
+step inside it, failed nothing, and reported success.
+
+That is the precise reading these gates exist to prevent: this document already argues that
+"a missing credential must never read as a passing gate", and the implementation was doing
+exactly that. The earlier `Skipped` status had been incidental — the jobs were skipped
+because `golden-dataset`, which they depend on, had failed.
+
+The check now lives in a `preflight` job whose output gates the others at *job* level, so an
+absent credential renders as **Skipped**, not green. One honest caveat remains: GitHub
+treats a skipped required check as satisfied, so a green PR is still not proof the gates
+ran. The check state has to be read, not just the tick.
+
 ## Relevance score distribution
 
 Top-1 relevance with `nomic-embed-text`, used to calibrate `docrag_uncertain_relevance`:
@@ -231,6 +310,14 @@ have flagged a quarter of the good queries as weak.
 
 **These numbers are provider-specific.** The relevance scale is not comparable across
 embedding models — re-measure before trusting any relevance threshold after switching.
+`eval/calibrate_relevance.py` (or `make calibrate`) reproduces exactly this measurement for
+whichever model is configured; it is retrieval only, so it costs no chat tokens.
+
+> **Outstanding for the Voyage switch.** `EMBEDDING_PROVIDER=voyage` is wired but the table
+> above is still `nomic-embed-text`. The thresholds have **not** been recalibrated, and
+> carrying them across unchanged is the mistake this section warns about. Run
+> `make calibrate` against Voyage, set the values in `config.py`, then confirm with the
+> full gate — `retrieval_recall` and `refusal_accuracy` are what actually grade the choice.
 
 ## How to run each mode
 
