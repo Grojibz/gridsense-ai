@@ -5,6 +5,26 @@ Measured 2026-08-01 against the live local stack (pgvector + Ollama), 32-item go
 
 > Written in English to match the rest of the repo.
 
+> **Status after the Claude switch (M8): not re-measured.**
+> `CHAT_PROVIDER` now defaults to `anthropic`, which changes *both* halves of this document
+> — the judge that scores the four RAGAS metrics, and the chain that produces the answers
+> the three deterministic metrics grade. Every number below still comes from the
+> 2026-08-01 local `llama3.2` run. They have deliberately not been edited to what a hosted
+> model "should" score: the whole argument of this document is that measured numbers beat
+> assumed ones.
+>
+> What to expect, and what to check when the run happens:
+> - the four judged metrics should gain **coverage** first (a capable judge scores all 23
+>   answerable items, not ~11) — read coverage before reading the score;
+> - `output_validity` and `refusal_accuracy` are deterministic and depend on the **chain**,
+>   not the judge, so they move because Claude is answering, not because Claude is grading;
+> - if `output_validity` does not reach 1.0 on a hosted model, that is a bug to investigate,
+>   not a threshold to loosen.
+>
+> ```bash
+> make eval-ragas && make eval-gate     # then rewrite the tables below from results.json
+> ```
+
 ## Short answer
 
 The eval reports seven metrics. **Three are computed deterministically and are trustworthy
