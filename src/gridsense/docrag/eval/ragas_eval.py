@@ -63,9 +63,15 @@ RAGAS_METRIC_NAMES = {
 }
 CORE_METRICS = tuple(RAGAS_METRIC_NAMES.values())
 
-#: Refusal reason meaning "the model's output could not be parsed" — an infrastructure
-#: failure, not a guardrail decision, and scored as such.
+#: Refusal reason meaning "the model's output could not be parsed" — a model failure, not
+#: a guardrail decision, and scored as such.
 INVALID_OUTPUT = "invalid_output"
+#: Refusal reason meaning the call never reached a model at all: no credit balance, a bad
+#: key, a rate limit, a refused connection. These items were not *measured*, so scoring
+#: them either way is a lie — an unpaid invoice must not read as a weak model, and it must
+#: not read as a healthy one either. They are excluded from `output_validity` and counted
+#: separately, the same way an uncomputable judged metric is excluded and shows in coverage.
+PROVIDER_ERROR = "provider_error"
 
 #: Sized for a local Ollama judge, which serialises requests: few workers, long timeout.
 #: RAGAS's own defaults (16 workers / 180 s) starve it and every job times out to NaN.
@@ -123,6 +129,9 @@ class RagasReport(BaseModel):
     #: How many items each RAGAS metric actually produced a number for. A metric with low
     #: coverage has an untrustworthy mean, so the gate checks this too.
     coverage: dict[str, int]
+    #: Items where the provider was never reached (credits, auth, rate limit, connection).
+    #: Non-zero means part of this run measured nothing, whatever the scores say.
+    n_provider_errors: int = 0
     items: list[ItemRecord]
 
     def render(self) -> str:
@@ -134,6 +143,17 @@ class RagasReport(BaseModel):
             f"unanswerable {self.n_unanswerable})",
             "",
         ]
+        if self.n_provider_errors:
+            # Loud, and above the scores: a run where the provider was unreachable for some
+            # items is not a measurement of the model, and the numbers below say nothing
+            # about it. Reading them as a verdict is the mistake this line exists to stop.
+            lines[-1:] = [
+                f"!! {self.n_provider_errors} of {self.n_items} item(s) never reached the "
+                "provider (credits / auth / rate limit).",
+                "!! Those items are excluded from output_validity. Fix the provider and "
+                "re-run before trusting anything below.",
+                "",
+            ]
         for name, value in self.scores.items():
             covered = self.coverage.get(name)
             suffix = f"   [{covered}/{self.n_answerable} scored]" if covered is not None else ""
@@ -312,12 +332,18 @@ def aggregate(records: list[ItemRecord]) -> RagasReport:
     scores["refusal_accuracy"] = _mean(
         [float(r.refused and r.refusal_reason != INVALID_OUTPUT) for r in unanswerable]
     )
-    scores["output_validity"] = _mean([float(r.refusal_reason != INVALID_OUTPUT) for r in records])
+    # Items the provider never answered are not evidence about the model either way, so
+    # they are left out of the mean rather than scored as a pass or a failure. The count
+    # goes in the report so a run polluted by infrastructure is visible instead of quietly
+    # producing a number.
+    measured = [r for r in records if r.refusal_reason != PROVIDER_ERROR]
+    scores["output_validity"] = _mean([float(r.refusal_reason != INVALID_OUTPUT) for r in measured])
 
     return RagasReport(
         n_items=len(records),
         n_answerable=len(answerable),
         n_unanswerable=len(unanswerable),
+        n_provider_errors=len(records) - len(measured),
         scores=scores,
         coverage=coverage,
         items=records,

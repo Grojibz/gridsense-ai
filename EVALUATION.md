@@ -101,7 +101,7 @@ is an average over 10 of 23 items, and the 13 the judge dropped are not a random
 
 ## Known problems in the numbers above
 
-Five problems, in the order they were found. Four are fixed; the third is open.
+Six problems, in the order they were found. Five are fixed; the third is open.
 
 The first three were surfaced *by* the eval harness, which is the argument for having built
 it. The last two were faults in the harness's own plumbing, and are the more uncomfortable
@@ -295,6 +295,49 @@ The check now lives in a `preflight` job whose output gates the others at *job* 
 absent credential renders as **Skipped**, not green. One honest caveat remains: GitHub
 treats a skipped required check as satisfied, so a green PR is still not proof the gates
 ran. The check state has to be read, not just the tick.
+
+### 6. ~~An unpaid invoice reported as a weak model~~ — fixed
+
+Found by the first end-to-end run against a hosted provider, and it is the same shape as
+problems #1 and #3: a failure wearing another failure's clothes.
+
+`/ask` came back refused, reason `invalid_output`, telling the user *"the model's response
+was malformed. Please try again."* The real cause was a 400 from the API:
+
+```
+Your credit balance is too low to access the Anthropic API.
+```
+
+Nothing was malformed, because nothing was returned. And "try again" is advice that cannot
+work against an empty balance — it just spends another round trip on a certain failure,
+twice, because the repair retry fired too.
+
+`invoke_structured` caught every exception the same way. That is right for a completion
+that will not fit the schema and wrong for a request that never produced one, and the
+consequences were not only cosmetic: the eval counts `invalid_output` against
+**`output_validity`**, a metric that is supposed to say whether the model can hold a
+schema. An unpaid invoice would have pushed it down and read as model weakness — the exact
+misattribution problem #3 took days to unpick when a faulty GPU looked like a bad prompt.
+
+**The fix.** Two refusal reasons instead of one. `invalid_output` keeps its meaning: the
+model answered, unusably, and retrying is reasonable. `provider_error` is new: the call
+never reached a model — auth, credits, rate limit, refused connection — so it is not
+retried, it carries a message that says what to check, and it is **excluded** from
+`output_validity` rather than scored as a pass or a failure. Scoring it either way would be
+a claim about a model that was never asked anything. The count appears in the report, so a
+run where the provider was unreachable says so instead of quietly producing numbers.
+
+Classification is two cheap signals and needs no provider SDK importable at that point: an
+HTTP status attribute, which every Anthropic and OpenAI SDK error carries and no parse
+failure has, and the exception's top-level module, which catches transport errors like a
+refused connection to a local Ollama.
+
+**Why the unit tests could not have found it.** All 260 of them passed. They exercise
+`invoke_structured` with a scripted model that raises `ValueError` — a stand-in for a
+parse failure, which is what the function was written to handle. No fake had ever raised
+something with an HTTP status, because the distinction the function was missing was also
+missing from the test's idea of what could go wrong. It took a real call to a real account
+in a real failure state.
 
 ## Relevance score distribution
 

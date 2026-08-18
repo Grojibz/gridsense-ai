@@ -18,7 +18,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gridsense}
       POSTGRES_DB: ${POSTGRES_DB:-gridsense}
     ports:
-      - "5432:5432"
+      # Host port is overridable so the stack can coexist with another project already
+      # holding 5432. Only the host side moves — everything inside the compose network
+      # still talks to postgres:5432 — so if you change it, change DATABASE_URL to match.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

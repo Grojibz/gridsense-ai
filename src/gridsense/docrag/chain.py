@@ -35,6 +35,8 @@ from pydantic import BaseModel, Field
 
 from gridsense.config import Settings, get_settings
 from gridsense.docrag.guardrails import (
+    INVALID_OUTPUT,
+    PROVIDER_ERROR,
     UncertaintyLevel,
     assess_uncertainty,
     check_input,
@@ -55,6 +57,12 @@ NO_ANSWER = "I don't know — I couldn't find relevant information in the docume
 UNUSABLE_OUTPUT = (
     "I couldn't produce a reliable answer just now — the model's response was malformed. "
     "Please try again."
+)
+#: Distinct again: there was no response at all. Telling someone to try again when the
+#: account has no credit balance, or the key is wrong, is advice that cannot work.
+PROVIDER_UNAVAILABLE = (
+    "I couldn't reach the language model — the request failed before it produced anything. "
+    "This is a configuration or account problem, not a question you can rephrase."
 )
 
 #: Sentinel so callers can pass ``langfuse_client=None`` to disable tracing explicitly,
@@ -327,7 +335,7 @@ def answer_question(
     # (We don't use Langfuse's LangChain callback: its v2 integration imports the legacy
     # `langchain.callbacks` module, which LangChain v1 removed.)
     started = datetime.now()
-    llm_out, attempts = invoke_structured(
+    llm_out, attempts, failure = invoke_structured(
         chat_model, _LLMAnswer, messages, retries=settings.docrag_output_retries
     )
     ended = datetime.now()
@@ -348,10 +356,15 @@ def answer_question(
 
     # --- Output schema gate ------------------------------------------------
     if llm_out is None:
-        # Every attempt produced something unparseable. Fall back deterministically rather
-        # than propagate the parser exception out of the API.
-        result = _refuse("invalid_output", message=UNUSABLE_OUTPUT)
-        _finalize_trace(trace, langfuse_client, result, reason="invalid_output", scores=scores)
+        # Fall back deterministically rather than propagate the exception out of the API —
+        # but say which of the two failures it was. "The model answered badly" and "the
+        # model was never reached" need different words and different next steps.
+        if failure == PROVIDER_ERROR:
+            result = _refuse(PROVIDER_ERROR, message=PROVIDER_UNAVAILABLE)
+            _finalize_trace(trace, langfuse_client, result, reason=PROVIDER_ERROR, scores=scores)
+            return result
+        result = _refuse(INVALID_OUTPUT, message=UNUSABLE_OUTPUT)
+        _finalize_trace(trace, langfuse_client, result, reason=INVALID_OUTPUT, scores=scores)
         return result
 
     confidence = max(0.0, min(1.0, llm_out.confidence))

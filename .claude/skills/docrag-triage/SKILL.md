@@ -25,9 +25,19 @@ Retrieval and downstream:
 | `no_relevant_context` | Nothing cleared the relevance floor | The corpus probably lacks the answer |
 | `low_confidence` | The model answered but below the confidence floor | The corpus likely lacks *enough* information |
 | `invalid_output` | Every attempt failed schema validation | The corpus may well hold the answer — **retrying is reasonable** |
+| `provider_error` | The call never reached a model at all | Auth, credit balance, rate limit or connection. **Retrying cannot help** — fix the configuration |
 
-The last distinction is the one people get wrong. `invalid_output` is a model failure, not a
-corpus verdict: saying "I couldn't find that" in response to it misreports the situation.
+Two distinctions people get wrong here.
+
+`invalid_output` is a model failure, not a corpus verdict: answering "I couldn't find that"
+misreports the situation, because the corpus was never the problem.
+
+`provider_error` vs `invalid_output` matters more. The first means there was no response to
+parse; the second means there was one and it was unusable. They were merged once, and an
+empty credit balance came back to users as *"the model's response was malformed. Please try
+again."* — wrong about what happened, and advice that could never work. If you see
+`provider_error`, check the key, the credit balance and the rate limit before touching
+anything in the pipeline.
 
 ## Uncertainty is not refusal
 

@@ -38,8 +38,11 @@ model scores roughly half the items and its scores mean little either way.
 - **`refusal_accuracy`** — the pipeline is refusing answerable items, or answering
   unanswerable ones. Note a refusal for the reason `invalid_output` does *not* count as a
   correct refusal; those land in `output_validity` instead.
-- **`output_validity`** — the model cannot hold a schema. Infrastructure health, not answer
-  quality. A hosted model should sit at 1.0.
+- **`output_validity`** — the model cannot hold a schema. A hosted model should sit at 1.0.
+  Items that never reached the provider at all (`provider_error` — credits, auth, rate
+  limit) are **excluded** from this metric rather than scored either way, and counted
+  separately in the report. A non-zero provider-error count means part of the run measured
+  nothing, whatever the scores say: fix the provider and re-run before reading them.
 - **`faithfulness`** — the answer states things the retrieved context does not support.
   Check the deterministic groundedness post-check too; the two disagreeing is informative.
 - **`context_precision` / `context_recall`** — retrieval is pulling noise, or missing what
