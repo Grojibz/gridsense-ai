@@ -33,12 +33,15 @@ Three concerns:
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
 from gridsense.config import Settings, get_settings
+
+logger = logging.getLogger("gridsense.docrag.guardrails")
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -142,7 +145,25 @@ def invoke_structured(
                 # Nothing to repair: there is no output. Retrying a bad key or an empty
                 # credit balance just spends latency on a certain failure, and the SDK has
                 # already retried anything transient.
+                #
+                # Logged at ERROR, with the exception: this is the one failure here that an
+                # operator must act on, and the message ("credit balance too low", "invalid
+                # x-api-key") is the whole diagnosis. It reaches the user as a deliberately
+                # vague `provider_error`, so if it is not in the log it is nowhere.
+                logger.error(
+                    "provider call failed",
+                    exc_info=exc,
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "status_code": getattr(exc, "status_code", None),
+                        "attempt": attempt,
+                    },
+                )
                 return None, attempt, PROVIDER_ERROR
+            logger.warning(
+                "structured output failed validation; retrying",
+                extra={"error_type": type(exc).__name__, "attempt": attempt},
+            )
             # Otherwise the model did answer and the answer was unusable — a malformed
             # completion, a validation error, or a refusal to emit the schema at all.
             attempt_messages = [*messages, HumanMessage(content=REPAIR_INSTRUCTION)]
@@ -151,6 +172,10 @@ def invoke_structured(
             return parsed, attempt, None
         attempt_messages = [*messages, HumanMessage(content=REPAIR_INSTRUCTION)]
 
+    logger.warning(
+        "structured output unusable after every attempt",
+        extra={"attempts": retries + 1, "schema": schema.__name__},
+    )
     return None, retries + 1, INVALID_OUTPUT
 
 

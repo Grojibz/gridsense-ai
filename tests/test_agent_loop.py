@@ -261,3 +261,95 @@ def test_a_refused_subagent_reports_back_instead_of_propagating_the_refusal():
     client = FakeClient([_message(stop_reason="refusal")])
     finding = build_research_tool(settings=SETTINGS, client=client).call({"question": "q"})
     assert "declined" in finding.lower()
+
+
+# --- the cost ceiling --------------------------------------------------------
+#
+# `MAX_ITERATIONS` bounds the number of turns, which is not the same as bounding the spend:
+# twelve turns of a long-context tool result cost far more than twelve short ones. The token
+# ceiling is the limit that is actually denominated in the thing being paid for, and it is
+# enforced here rather than delegated to the provider — `task_budget` is advisory, and a
+# limit the model may decline to respect is not a limit.
+
+
+def test_the_loop_stops_when_the_token_budget_is_exhausted():
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test", agent_max_total_tokens=1000)
+    client = FakeClient(
+        [
+            _message(
+                _tool_use("search_docs", query="soh"),
+                stop_reason="tool_use",
+                usage=_usage(input_tokens=600, output_tokens=500),
+            ),
+            _message(_text("a complete answer nobody should see")),
+        ]
+    )
+    answer = run_agent("q", client=client, settings=settings)
+
+    assert answer.refused is True
+    assert answer.refusal_reason == "budget_exceeded"
+    assert answer.iterations == 1
+    assert "nobody should see" not in answer.answer
+
+
+def test_a_budget_stop_is_a_refusal_rather_than_a_partial_answer():
+    """A trajectory cut short usually stops before the step that draws the conclusion."""
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test", agent_max_total_tokens=100)
+    client = FakeClient(
+        [
+            _message(
+                _tool_use("predict_soh", cycle_count=1500.0),
+                stop_reason="tool_use",
+                usage=_usage(input_tokens=200),
+            )
+        ]
+    )
+    answer = run_agent("q", client=client, settings=settings)
+
+    assert answer.refused is True
+    # The trajectory so far is still reported: it is what the caller needs to see why.
+    assert [call.name for call in answer.tool_calls] == ["predict_soh"]
+    assert answer.usage["input_tokens"] == 200
+
+
+def test_a_run_inside_its_budget_is_untouched():
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test", agent_max_total_tokens=10_000)
+    client = FakeClient([_message(_text("done"), usage=_usage(input_tokens=50, output_tokens=10))])
+    answer = run_agent("q", client=client, settings=settings)
+
+    assert answer.refused is False
+    assert answer.answer == "done"
+
+
+def test_a_zero_budget_disables_the_ceiling():
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test", agent_max_total_tokens=0)
+    client = FakeClient([_message(_text("done"), usage=_usage(input_tokens=10**9))])
+    assert run_agent("q", client=client, settings=settings).refused is False
+
+
+def test_cache_reads_count_toward_the_ceiling_because_they_are_billed():
+    """Discounted is not free, and a cached prefix is most of a long agentic prompt."""
+    assert agent_loop.billable_tokens({"cache_read_input_tokens": 500, "input_tokens": 100}) == 600
+
+
+# --- the advisory budget -----------------------------------------------------
+
+
+def test_no_task_budget_is_sent_unless_one_was_configured():
+    """A budget guessed without measuring degrades answers for no saving."""
+    _, client = _run([_message(_text("done"))])
+    assert "task_budget" not in client.request["output_config"]
+    assert agent_loop.TASK_BUDGET_BETA not in client.request.get("betas", [])
+
+
+def test_a_configured_task_budget_is_sent_with_its_beta_flag():
+    settings = Settings(
+        _env_file=None, anthropic_api_key="sk-test", anthropic_task_budget_tokens=64_000
+    )
+    client = FakeClient([_message(_text("done"))])
+    run_agent("q", client=client, settings=settings)
+
+    assert client.request["output_config"]["task_budget"] == {"type": "tokens", "total": 64_000}
+    assert agent_loop.TASK_BUDGET_BETA in client.request["betas"]
+    # The refusal fallback beta must survive alongside it, not be replaced by it.
+    assert agent_loop.FALLBACK_BETA in client.request["betas"]

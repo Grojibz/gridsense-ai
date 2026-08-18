@@ -17,11 +17,27 @@ spec:
         app.kubernetes.io/name: gridsense-api
         app.kubernetes.io/part-of: gridsense
     spec:
+      # Pod-level defaults; the container overrides nothing below. Set here so any sidecar
+      # added later inherits them rather than quietly running as root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           # Build with: docker build -t gridsense-api:latest . — then push to your registry.
+          # Pin a digest or an immutable tag in a real deployment. `latest` with
+          # IfNotPresent means a node serves whatever it cached, two nodes can run
+          # different builds under the same name, and there is nothing to roll back *to*.
           image: gridsense-api:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8000
@@ -37,15 +53,28 @@ spec:
             limits:
               cpu: "1"
               memory: "1Gi"
+          # readOnlyRootFilesystem needs somewhere writable for anything that spools to
+          # disk (tempfiles, matplotlib/HF caches pulled in by the ML stack).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Readiness and liveness answer different questions and must not share an
+          # endpoint. /ready checks Postgres: failing it pulls the pod out of the Service
+          # until it recovers. /health checks only that the process is serving: failing it
+          # *kills the container*, which would be the wrong response to a database blip.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+      volumes:
+        - name: tmp
+          emptyDir: {}

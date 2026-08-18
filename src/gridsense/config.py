@@ -58,6 +58,41 @@ class Settings(BaseSettings):
     environment: str = "local"
     log_level: str = "INFO"
 
+    # --- API security ------------------------------------------------------
+    # Comma-separated so a key can be rotated without a flag-day cutover: publish the new
+    # one, let clients move, retire the old one. Unset outside `local`/`test` is a startup
+    # error — see gridsense.api.security. Never logged; the log formatter redacts on the
+    # field name and only a key prefix ever reaches a rate-limit bucket.
+    api_keys: str | None = None
+    #: Explicit opt-out for a deployment that authenticates in front of this service (an
+    #: API gateway, a mesh, an ingress with mTLS). Loud at every startup, and never the
+    #: default — a silent "no auth" default is the gap this setting exists to close.
+    api_auth_disabled: bool = False
+
+    # --- Rate limits (per caller, per minute; 0 disables) -------------------
+    # Two numbers rather than one because the endpoints do not cost the same. `/ask` is a
+    # single model call; `/agent` is a bounded loop of them plus a sub-agent, so a rate
+    # loose enough to be usable on the first is far too loose on the second.
+    # ⚠️ Enforced per process — N replicas mean N times the limit. See api/ratelimit.py.
+    rate_limit_per_minute: int = 60
+    agent_rate_limit_per_minute: int = 6
+
+    # --- Timeouts and budgets ----------------------------------------------
+    #: Per-request ceiling on a single provider call, in seconds. Without one, a hung
+    #: provider holds a worker until the process is restarted, and enough of them take the
+    #: service down without a single error being raised. Generous by default because a
+    #: local Ollama on CPU is genuinely slow; tighten it for a hosted provider.
+    request_timeout_seconds: float = 120.0
+    #: Hard ceiling on the tokens one `/agent` request may spend across all its turns. This
+    #: is enforced locally, by stopping the loop — the only cost limit here that does not
+    #: depend on the provider honouring anything. 0 disables it.
+    agent_max_total_tokens: int = 200_000
+    #: Advisory budget passed to the API so the model paces itself (`output_config.
+    #: task_budget`, minimum 20 000). It is a *suggestion the model can see*, not a cap:
+    #: `agent_max_total_tokens` above is what actually stops the spend. Left unset because
+    #: a budget guessed without measuring the workload degrades answers for no saving.
+    anthropic_task_budget_tokens: int | None = None
+
     # --- LLM providers -----------------------------------------------------
     # Chat and embeddings are configured separately because Anthropic has no embeddings
     # API: `chat_provider=anthropic` is only meaningful alongside an embedding provider
@@ -163,6 +198,17 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
+
+    @model_validator(mode="after")
+    def _check_task_budget(self) -> Settings:
+        """Reject a task budget the API would reject, at startup rather than mid-request."""
+        budget = self.anthropic_task_budget_tokens
+        if budget is not None and budget < 20_000:
+            raise ValueError(
+                f"ANTHROPIC_TASK_BUDGET_TOKENS={budget} is below the API minimum of 20000. "
+                "Raise it, or leave it unset to send no budget at all."
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod
