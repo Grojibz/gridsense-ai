@@ -16,11 +16,7 @@ import sys
 from pathlib import Path
 
 from gridsense.docrag.eval.golden import load_golden_dataset
-from gridsense.docrag.eval.ragas_eval import (
-    RAGAS_MAX_WORKERS,
-    RAGAS_TIMEOUT_SECONDS,
-    run_eval,
-)
+from gridsense.docrag.eval.ragas_eval import run_eval
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,17 +30,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Evaluate the current vector store instead of re-ingesting the corpus first.",
     )
     parser.add_argument("--no-publish", action="store_true", help="Do not push scores to Langfuse.")
+    # Both default to None so the values are derived from the configured judge — a local
+    # model needs few workers and a long timeout, a hosted one the opposite, and pinning
+    # either set here would silently apply it to both.
     parser.add_argument(
         "--timeout",
         type=int,
-        default=RAGAS_TIMEOUT_SECONDS,
-        help="Per-job RAGAS timeout in seconds. Raise it for a slow local judge.",
+        default=None,
+        help="Per-job RAGAS timeout in seconds. Default: derived from the judge provider.",
     )
     parser.add_argument(
         "--workers",
         type=int,
-        default=RAGAS_MAX_WORKERS,
-        help="Concurrent RAGAS jobs. Keep low for Ollama; raise for a hosted endpoint.",
+        default=None,
+        help="Concurrent RAGAS jobs. Default: derived from the judge provider.",
     )
     args = parser.parse_args(argv)
 

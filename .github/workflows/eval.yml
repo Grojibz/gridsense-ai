@@ -22,12 +22,20 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install
-        run: pip install -e ".[docrag,dev]"
-      - name: Validate golden dataset + thresholds
-        run: pytest tests/test_golden_dataset.py tests/test_thresholds.py tests/test_ragas_eval.py -v
+        run: pip install -e ".[docrag,agent,dev]"
+      # Deterministic and offline: dataset-vs-corpus drift, the gate logic itself, and the
+      # trajectory scoring (including that every tool an item names still exists).
+      - name: Validate golden dataset + thresholds + trajectories
+        run: >-
+          pytest -v
+          tests/test_golden_dataset.py
+          tests/test_thresholds.py
+          tests/test_ragas_eval.py
+          tests/test_agent_eval.py
 
-  # The actual merge gate. Needs an LLM, so it only runs where the Azure OpenAI secrets
-  # exist; on a fork PR it is skipped rather than failing on missing credentials.
+  # The actual merge gate. Claude judges and Azure OpenAI embeds — the split is forced,
+  # not stylistic: Anthropic serves no embeddings API. Needs both credentials, so on a fork
+  # PR it is skipped rather than failing on secrets GitHub deliberately withholds.
   ragas-gate:
     runs-on: ubuntu-latest
     needs: golden-dataset
@@ -49,7 +57,10 @@ jobs:
           --health-retries 10
 
     env:
-      LLM_PROVIDER: azure
+      CHAT_PROVIDER: anthropic
+      EMBEDDING_PROVIDER: azure
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-opus-5' }}
       AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
       AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
       AZURE_OPENAI_CHAT_DEPLOYMENT: ${{ vars.AZURE_OPENAI_CHAT_DEPLOYMENT || 'gpt-4o-mini' }}
@@ -66,14 +77,16 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # A missing credential must never read as a passing gate: the job cannot fail (the
+      # code might be fine) and cannot pass (it never evaluated), so it says so and skips.
       - name: Check for LLM credentials
         id: creds
         run: |
-          if [ -n "${AZURE_OPENAI_API_KEY}" ]; then
+          if [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${AZURE_OPENAI_API_KEY}" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::AZURE_OPENAI_API_KEY is not set — the RAGAS merge gate is skipped."
+            echo "::warning::ANTHROPIC_API_KEY (judge) and AZURE_OPENAI_API_KEY (embeddings) are both required — the RAGAS merge gate is skipped."
           fi
 
       - name: Install
@@ -97,3 +110,82 @@ jobs:
       - name: Enforce thresholds
         if: steps.creds.outputs.available == 'true'
         run: python eval/check_thresholds.py eval/results.json
+
+  # Scores the agent's *trajectory*: did it reach for the right tools, and avoid the wrong
+  # ones. A separate gate from ragas-gate because it measures a different thing — the same
+  # final sentence can come from sound tool use or from a guess that consulted nothing.
+  agent-gate:
+    runs-on: ubuntu-latest
+    needs: golden-dataset
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gridsense
+          POSTGRES_PASSWORD: gridsense
+          POSTGRES_DB: gridsense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CHAT_PROVIDER: anthropic
+      EMBEDDING_PROVIDER: azure
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-opus-5' }}
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${{ vars.AZURE_OPENAI_EMBEDDING_DEPLOYMENT || 'text-embedding-3-small' }}
+      DATABASE_URL: postgresql+psycopg://gridsense:gridsense@localhost:5432/gridsense
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Check for LLM credentials
+        id: creds
+        run: |
+          if [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${AZURE_OPENAI_API_KEY}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ANTHROPIC_API_KEY (agent) and AZURE_OPENAI_API_KEY (embeddings) are both required — the agent gate is skipped."
+          fi
+
+      - name: Install
+        if: steps.creds.outputs.available == 'true'
+        run: pip install -e ".[docrag,degrade,agent]"
+
+      # The agent reads the corpus through the same retriever as /ask, so the store has to
+      # be populated before any trajectory is scored.
+      - name: Ingest the corpus
+        if: steps.creds.outputs.available == 'true'
+        run: python -m gridsense.docrag.ingest data/docs
+
+      # Scored and gated in separate steps, as ragas-gate is, so the report is still
+      # uploaded when the gate fails — that run is the one worth reading.
+      - name: Score agent trajectories
+        if: steps.creds.outputs.available == 'true'
+        run: python eval/run_agent_eval.py --no-gate --out eval/agent_results.json
+
+      - name: Upload report
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-trajectory-report
+          path: eval/agent_results.json
+
+      # Blocks the merge when the agent stops reaching for the right tools, or starts
+      # reaching for the wrong ones. Thresholds live in src/gridsense/agent/eval.py.
+      - name: Enforce thresholds
+        if: steps.creds.outputs.available == 'true'
+        run: python eval/check_agent_thresholds.py eval/agent_results.json

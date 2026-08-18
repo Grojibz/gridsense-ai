@@ -72,6 +72,27 @@ INVALID_OUTPUT = "invalid_output"
 RAGAS_TIMEOUT_SECONDS = 900
 RAGAS_MAX_WORKERS = 2
 
+#: A hosted judge is the opposite problem — it answers in seconds and serves requests in
+#: parallel, so the local settings turn a two-minute eval into a twenty-minute one. RAGAS
+#: issues several internal prompts per metric per item, which multiplies the difference.
+HOSTED_TIMEOUT_SECONDS = 180
+HOSTED_MAX_WORKERS = 8
+
+
+def judge_run_config(settings: Settings | None = None) -> tuple[int, int]:
+    """Return ``(timeout, max_workers)`` suited to the configured judge.
+
+    Local and hosted judges fail in opposite directions: too many workers starves Ollama
+    into NaN scores, too few makes a hosted run needlessly slow. Both failures are silent —
+    one looks like a weak judge, the other like a slow CI job.
+    """
+    from gridsense.config import ChatProvider, get_settings
+
+    settings = settings or get_settings()
+    if settings.chat_provider is ChatProvider.ollama:
+        return RAGAS_TIMEOUT_SECONDS, RAGAS_MAX_WORKERS
+    return HOSTED_TIMEOUT_SECONDS, HOSTED_MAX_WORKERS
+
 
 class ItemRecord(BaseModel):
     """One golden item run through the pipeline, with its scores."""
@@ -193,8 +214,8 @@ def score_with_ragas(
     llm: BaseChatModel | None = None,
     embeddings: Embeddings | None = None,
     settings: Settings | None = None,
-    timeout: int = RAGAS_TIMEOUT_SECONDS,
-    max_workers: int = RAGAS_MAX_WORKERS,
+    timeout: int | None = None,
+    max_workers: int | None = None,
 ) -> None:
     """Fill in ``record.ragas`` for the answerable records, in place.
 
@@ -203,10 +224,13 @@ def score_with_ragas(
     ``timeout`` and ``max_workers`` matter more than they look: RAGAS fans out one job per
     metric per item and defaults to 16 workers on a 180 s timeout. Against a local Ollama
     model that saturates the queue and every job times out, which yields a report full of
-    NaN — a *silent* zero. The defaults here are sized for a local model; raise the workers
-    for a hosted endpoint.
+    NaN — a *silent* zero. Left unset, both are derived from the configured judge by
+    :func:`judge_run_config`, because local and hosted judges need opposite settings.
     """
     settings = settings or get_settings()
+    default_timeout, default_workers = judge_run_config(settings)
+    timeout = default_timeout if timeout is None else timeout
+    max_workers = default_workers if max_workers is None else max_workers
     for record in records:
         if record.answerable and record.refused:
             record.ragas = dict.fromkeys(CORE_METRICS, 0.0)
@@ -350,8 +374,8 @@ def run_eval(
     settings: Settings | None = None,
     k: int | None = None,
     publish: bool = True,
-    timeout: int = RAGAS_TIMEOUT_SECONDS,
-    max_workers: int = RAGAS_MAX_WORKERS,
+    timeout: int | None = None,
+    max_workers: int | None = None,
 ) -> RagasReport:
     """Run the full golden-set evaluation and return the aggregate report."""
     dataset = dataset if dataset is not None else load_golden_dataset()
