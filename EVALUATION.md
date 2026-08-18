@@ -29,7 +29,7 @@ Measured 2026-08-01 against the live local stack (pgvector + Ollama), 32-item go
 
 The eval reports seven metrics. **Three are computed deterministically and are trustworthy
 locally. Four go through an LLM judge, and a local model produces real numbers for them but
-not on enough items to gate on** — hence the CI `ragas-gate` job pointing at Azure OpenAI.
+not on enough items to gate on** — hence the CI `ragas-gate` job using Claude as the judge.
 
 The distinction is *not* local-vs-cloud, and it is not that RAGAS "cannot run locally" —
 an earlier version of this document said exactly that, on measurements taken from a machine
@@ -318,6 +318,14 @@ whichever model is configured; it is retrieval only, so it costs no chat tokens.
 > carrying them across unchanged is the mistake this section warns about. Run
 > `make calibrate` against Voyage, set the values in `config.py`, then confirm with the
 > full gate — `retrieval_recall` and `refusal_accuracy` are what actually grade the choice.
+>
+> **Blocked on a rate limit, not on cost.** A Voyage account with no payment method is
+> capped at **3 requests per minute**. The 200M free tokens apply either way — the card
+> unlocks the standard rate limits, it does not unlock the free tier. One eval run issues
+> roughly fifty embedding calls back to back (six chunks in a single batched ingest, then a
+> query embedding per golden item, then RAGAS's own), so 3 RPM does not fail slowly, it
+> fails immediately with `RateLimitError`. Adding a payment method is the fix and costs
+> nothing at this volume. Until then the gates are paused deliberately — see below.
 
 ## How to run each mode
 
@@ -340,12 +348,29 @@ for a hosted endpoint.
 
 ## In CI
 
+**Pausing the credentialed gates.** Set a repository variable `EVAL_GATES=off`
+(`Settings` → `Secrets and variables` → `Actions` → `Variables`). `preflight` then reports
+the gates as skipped with a warning that says they were switched off *deliberately*, which
+is a different fact from "the credentials were missing" — and both are different from
+green. Deleting a secret would have paused them too, at the cost of collapsing those three
+states into one; that ambiguity is what problem #5 was about. Remove the variable to
+re-enable.
+
+
 `.github/workflows/eval.yml` splits along exactly this line:
 
 - **`golden-dataset`** — always runs, on every PR. Validates the dataset schema, checks
-  every `must_contain` string is still verbatim in `data/docs`, and exercises the gate
-  logic. No LLM, no datastore, a few seconds.
-- **`ragas-gate`** — the merge gate. Brings up pgvector, runs the full eval against Azure
-  OpenAI, and fails the build on a threshold or coverage breach. Skips itself when the
-  Azure secrets are absent (fork PRs), because a missing credential must not read as a
-  passing gate.
+  every `must_contain` string is still verbatim in `data/docs`, and exercises both gates'
+  scoring logic. No LLM, no datastore, a few seconds.
+- **`preflight`** — decides once whether the credentialed gates can run, and publishes the
+  answer as a job output. It exists so the answer is visible: see problem #5.
+- **`ragas-gate`** — the RAG merge gate. Brings up pgvector, replays the golden set through
+  the real chain with Claude judging and Voyage embedding, and fails the build on a
+  threshold or coverage breach.
+- **`agent-gate`** — the trajectory gate. Scores which tools the agent reached for, which
+  is a different question from whether the answer reads well. Scores and gates in separate
+  steps so the report is uploaded even when the gate fails.
+
+The last two are gated on `preflight` *at job level*, so they render as **Skipped** rather
+than green when they cannot run — on a fork PR, with credentials absent, or with
+`EVAL_GATES=off`. A missing credential must never read as a passing gate.

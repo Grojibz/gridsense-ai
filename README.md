@@ -105,6 +105,10 @@ rather than guessing an embedding provider on your behalf.
 and `voyage-4-lite` ships 200M free tokens — this corpus will not exhaust them. Ollama stays
 the fully-offline path.
 
+> A Voyage account with no payment method is limited to **3 requests per minute**, which an
+> eval run exceeds within seconds. The free tokens apply regardless; the card raises the
+> rate limit, it does not unlock the free tier.
+
 > ⚠️ **The relevance scale is not comparable across embedding models.**
 > `docrag_min_relevance` and `docrag_uncertain_relevance` are percentile cuts through one
 > model's similarity distribution. Carrying them across a provider switch silently redefines
@@ -169,7 +173,7 @@ gridsense-ai/
 A retrieval-augmented assistant over technical documents that **always cites its
 sources** and refuses to answer when retrieval confidence is low.
 
-- Ingestion: PDF/markdown loaders → semantic chunking → Azure OpenAI embeddings → pgvector,
+- Ingestion: PDF/markdown loaders → semantic chunking → embeddings (Voyage, Azure or Ollama) → pgvector,
   with a post-write check that every chunk still retrieves itself (a bad vector is otherwise
   silent — see [`EVALUATION.md`](EVALUATION.md)).
 - Retrieval: top-k similarity + optional reranking; metadata filters (doc type, section).
@@ -265,8 +269,8 @@ faithfulness drop shows up next to the production traces, not only in CI logs.
 
 **CI.** `.github/workflows/eval.yml` runs on every PR. The `golden-dataset` job always
 runs (schema, ground-truth-vs-corpus, gate logic — no LLM, a few seconds). The
-`ragas-gate` job spins up pgvector, runs the full eval against Azure OpenAI, uploads
-`results.json` as an artifact, and fails the build on a threshold breach. Mark it as a
+`ragas-gate` job spins up pgvector, replays the golden set with Claude judging and Voyage
+embedding, uploads `results.json` as an artifact, and fails the build on a threshold breach. Mark it as a
 required status check in branch protection to actually block the merge; it skips itself
 on fork PRs, where the secrets aren't available.
 
@@ -408,9 +412,10 @@ gating in separate steps so the report is still uploaded when the gate fails.
 
 ## Getting started
 
-The default setup runs **fully offline** using a local [Ollama](https://ollama.com) for the
-LLM + embeddings; set `LLM_PROVIDER=azure` (and the `AZURE_OPENAI_*` keys) to use Azure
-OpenAI instead.
+The default setup runs **fully offline** using a local [Ollama](https://ollama.com) for both
+chat and embeddings. For the hosted path set `CHAT_PROVIDER=anthropic` (plus
+`ANTHROPIC_API_KEY`) and `EMBEDDING_PROVIDER=voyage` (plus `VOYAGE_API_KEY`); Azure OpenAI
+works for either half if you already have it.
 
 ```bash
 # 0. Prereqs: Docker, and Ollama with the models pulled (for the offline default)

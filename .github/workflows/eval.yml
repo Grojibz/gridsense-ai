@@ -44,8 +44,12 @@ jobs:
   #
   # Note GitHub still treats a skipped required check as satisfied, so a green PR is not by
   # itself evidence the gates ran. Read the check state, not just the tick. (To make a
-  # missing credential genuinely block your own PRs, `exit 1` in the else branch below —
-  # fork PRs are already excluded by the `if:` on the gate jobs.)
+  # missing credential genuinely block your own PRs, `exit 1` in the credentials branch
+  # below — fork PRs are already excluded by the `if:` on the gate jobs.)
+  #
+  # The three outcomes are kept distinct in the log on purpose. "Turned off deliberately"
+  # and "could not run" are different facts about a PR, and deleting a secret to pause the
+  # gates would collapse them into one — the same ambiguity this job exists to remove.
   preflight:
     runs-on: ubuntu-latest
     outputs:
@@ -56,13 +60,19 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          # Repository variable. Set EVAL_GATES=off to pause the credentialed gates without
+          # touching the secrets — e.g. while an embedding account is rate-limited.
+          EVAL_GATES: ${{ vars.EVAL_GATES }}
         run: |
-          if [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${VOYAGE_API_KEY}" ]; then
+          if [ "${EVAL_GATES}" = "off" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Eval gates are switched OFF by the EVAL_GATES repository variable. This PR has NOT been evaluated. Remove the variable to re-enable."
+          elif [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${VOYAGE_API_KEY}" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             echo "Both credentials present — the eval gates will run."
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ANTHROPIC_API_KEY (chat) and VOYAGE_API_KEY (embeddings) are both required. The eval gates are SKIPPED — this PR has not been evaluated."
+            echo "::warning::ANTHROPIC_API_KEY (chat) and VOYAGE_API_KEY (embeddings) are both required. The eval gates are SKIPPED — this PR has NOT been evaluated."
           fi
 
   # The RAG merge gate. Claude judges, Voyage embeds — the split is forced, not stylistic:
