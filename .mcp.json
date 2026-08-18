@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gridsense": {
+      "command": "python",
+      "args": ["-m", "gridsense.mcp.server"],
+      "env": {
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}
