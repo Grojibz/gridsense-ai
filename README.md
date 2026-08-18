@@ -370,6 +370,14 @@ twenty passages, and the bulk of the reading is billed at roughly a fifth of Opu
   structurally — the same contract `RagAnswer` uses. `fallbacks: "default"` is enabled so a
   decline is re-run on a fallback model rather than simply stopping; set
   `ANTHROPIC_REFUSAL_FALLBACK=false` for an account without the beta.
+- **A tool must return a string.** The tool runner puts the return value straight into
+  `tool_result.content`, which the API defines as a string or a list of content blocks —
+  there is no serialisation step in between. Returning a dict puts a bare JSON object on the
+  wire. `beta_tool`'s own type says this (its `FunctionT` is bound to a callable returning
+  `str`), and mypy is what caught it; no test could, because every agent test replaces the
+  client with a fake and a fake never encodes a request. The MCP SDK, by contrast, serialises
+  a dict return itself — two surfaces over one tool layer, two different contracts. See
+  problem #7 in [`EVALUATION.md`](EVALUATION.md).
 - **Prompt caching has a floor.** The minimum cacheable prefix on Opus 5 is 512 tokens. The
   agent's system prompt plus tool schemas measures ~1150 tokens (tiktoken estimate), so it
   should cache; the DocRAG system prompt alone (~120 tokens) would not. Confirm with

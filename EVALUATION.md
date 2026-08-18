@@ -101,13 +101,20 @@ is an average over 10 of 23 items, and the 13 the judge dropped are not a random
 
 ## Known problems in the numbers above
 
-Six problems, in the order they were found. Five are fixed; the third is open.
+Seven problems, in the order they were found. Six are fixed; the third is diagnosed but
+not resolved — the root cause is hardware, and `OLLAMA_NUM_GPU=0` is a workaround.
 
 The first three were surfaced *by* the eval harness, which is the argument for having built
-it. The last two were faults in the harness's own plumbing, and are the more uncomfortable
-ones: a gate that had never executed, and then a gate that reported success without
-evaluating anything. A measurement you never take and a measurement that always passes fail
-in the same direction.
+it. Two were faults in the harness's own plumbing, and are the more uncomfortable ones: a
+gate that had never executed, and then a gate that reported success without evaluating
+anything. A measurement you never take and a measurement that always passes fail in the same
+direction.
+
+The last two came from outside the harness entirely — one from the first real call to a paid
+provider, one from a type checker added for unrelated reasons — and they are the ones worth
+reading if you read only two. Both were invisible to a passing test suite, and for the same
+underlying reason: a test double stands in for something, and whatever it does not stand in
+for is untested no matter how green the run is.
 
 ### 1. ~~`refusal_accuracy = 1.000` is inflated~~ — fixed
 
@@ -338,6 +345,99 @@ parse failure, which is what the function was written to handle. No fake had eve
 something with an HTTP status, because the distinction the function was missing was also
 missing from the test's idea of what could go wrong. It took a real call to a real account
 in a real failure state.
+
+### 7. ~~A tool result the API would have rejected~~ — fixed
+
+Found by adding **mypy**, which was not looking for it. The type checker was introduced for
+its own sake; this fell out of the first run, and it is the only defect in the series that
+no test could have caught in the shape the tests were written.
+
+`beta_tool`'s type parameter is bound to a callable returning `str` (or an iterable of
+content blocks). All five agent tools were annotated `-> dict[str, Any]`. mypy said so five
+times, in the flat register it reserves for genuine findings and for third-party noise
+alike:
+
+```
+error: Value of type variable "FunctionT" of "beta_tool" cannot be
+       "Callable[[str, int], dict[str, Any]]"  [type-var]
+```
+
+The reflex is to read that as a stub problem and move on. Reading the SDK instead showed it
+was not: the tool runner takes what the function returned and puts it straight into the
+result block, with no serialisation step anywhere between.
+
+```python
+result = tool.call(tool_use.input)
+results.append({"type": "tool_result", "tool_use_id": tool_use.id, "content": result})
+```
+
+`tool_result.content` is defined by the Messages API as a string or a list of content
+blocks. A dict is neither. Driving the real SDK over a mock transport — no network, no
+credits — shows exactly what would have gone on the wire:
+
+```json
+{
+  "type": "tool_result",
+  "tool_use_id": "tu_1",
+  "content": { "answer": 42, "citations": [{"source": "a.md"}] }
+}
+```
+
+A bare JSON object where the schema admits a string or an array.
+
+**Why every existing test passed.** All 323 of them. `tests/test_agent_loop.py` replaces the
+Anthropic client with a fake that records the request kwargs and replays scripted messages,
+which is the right trade for asserting control flow — refusal handling, the token ceiling,
+trajectory recording — and it is precisely why it could not see this. **A fake client never
+serialises a request.** The tests assert what the loop *does*, and the defect was in what
+the loop *sends*; a tool returning an unserialisable shape is indistinguishable from a
+correct one when nothing downstream ever tries to encode it.
+
+This is the same lesson as problem #6 arriving from the other direction. There, no fake had
+ever raised an error carrying an HTTP status, so a distinction missing from the code was
+also missing from the tests' idea of what could go wrong. Here, no fake had ever encoded a
+request, so a contract that lives at the encoding boundary had nothing asserting it. Both
+times the gap was not in coverage — these lines were covered — but in what the double stood
+in for.
+
+**Why `/agent` in particular.** It is the one endpoint with no offline path: the tool runner
+is Anthropic-specific, and the account funding it has no credits. So the surface most in
+need of a real call was the one least able to receive one, and it stayed that way from the
+day it was written. Every other path in this repo has been exercised end to end.
+
+**Why MCP was unaffected.** The same five functions are exposed through the MCP server, and
+that path was always correct — the MCP SDK serialises a dict return itself:
+
+```
+CallToolResult(content=[TextContent(type='text', text='{\n  "answer": 42\n}')])
+```
+
+Worth stating rather than glossing: two surfaces over one tool layer do **not** imply two
+identical contracts. The shared layer returns dicts because that is right for Python callers
+and for MCP; the Anthropic surface needs a string. That asymmetry is exactly what the
+wrapper layer is for, and the repo already wrapped rather than registered — for a different
+reason (keeping test-injection parameters out of the schema the model sees). The serialising
+belongs in the same place.
+
+**The fix.** One helper, `as_tool_result`, applied in the five `@beta_tool` closures in
+`agent/loop.py` and `agent/subagents.py`. The shared functions in `agent/tools.py` are
+untouched, so the MCP server and Python callers keep the dicts. `json.dumps(..., default=str)`
+so a stray non-serialisable value degrades to its repr instead of raising inside the loop,
+where it would surface as an opaque tool error rather than as its cause.
+
+**The test that would have caught it.** `tests/test_agent_wire.py` keeps the real SDK in the
+loop and replaces only the transport, so the runner builds real request bodies and the
+assertion is on the bytes: `tool_result.content` must be a string. It also asserts that every
+tool in `build_tools()` declares `-> str`, so a sixth tool added with a dict return fails
+immediately rather than on its first live call. Both were confirmed to fail against the old
+code before the fix landed.
+
+The cost of that style is a test that breaks when the SDK's internals move. That is a fair
+price for the one property a fake cannot express: that a real request is well-formed.
+
+**What is still unverified.** The wire format is now asserted; the endpoint is not. Nothing
+here proves `/agent` answers correctly against a live API, only that the request it builds is
+a shape the API accepts. That remains the one gap in this repo that code cannot close.
 
 ## Relevance score distribution
 
