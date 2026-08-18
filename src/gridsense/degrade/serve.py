@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from gridsense.config import Settings, get_settings
+from gridsense.db import PREDICTIONS_TABLE as _PREDICTIONS_TABLE
+from gridsense.db import metadata, predictions
 from gridsense.degrade.data import add_derived_features, get_engine
 from gridsense.degrade.train import REGISTERED_MODEL
 
@@ -29,21 +31,8 @@ RAW_INPUT_COLUMNS = [
     "calendar_age_days",
 ]
 
-PREDICTIONS_TABLE = "degrade_predictions"
-
-_PREDICTIONS_DDL = f"""
-CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
-    id                SERIAL PRIMARY KEY,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    cycle_count       DOUBLE PRECISION,
-    avg_temperature_c DOUBLE PRECISION,
-    avg_dod           DOUBLE PRECISION,
-    avg_c_rate        DOUBLE PRECISION,
-    calendar_age_days DOUBLE PRECISION,
-    predicted_soh     DOUBLE PRECISION,
-    model_version     TEXT
-)
-"""
+#: Re-exported so existing imports keep working; the definition lives in gridsense.db.
+PREDICTIONS_TABLE = _PREDICTIONS_TABLE
 
 
 @lru_cache(maxsize=1)
@@ -70,10 +59,20 @@ def get_model(settings: Settings | None = None) -> tuple[Any, str]:
 
 
 def ensure_predictions_table(engine: Engine) -> None:
-    from sqlalchemy import text
+    """Create the predictions table if it is missing.
 
-    with engine.begin() as conn:
-        conn.execute(text(_PREDICTIONS_DDL))
+    This used to hold its own hand-written ``CREATE TABLE IF NOT EXISTS``, which made it a
+    second, silent source of truth for the schema: ``IF NOT EXISTS`` does nothing to a table
+    that already exists with the old shape, so a column added in one place and not the other
+    would diverge without any error until the next INSERT. It now builds from the same
+    metadata Alembic migrates, so there is one definition and two ways to apply it.
+
+    Kept for local development and the integration tests, where running a migration chain to
+    get one table is friction with no payoff. **Run `make migrate` in a deployment** — this
+    creates a missing table but will never alter an existing one, which is exactly the gap
+    migrations exist to close.
+    """
+    metadata.create_all(engine, tables=[predictions])
 
 
 def log_prediction(
@@ -90,7 +89,10 @@ def log_prediction(
         "VALUES (:cycle_count, :avg_temperature_c, :avg_dod, :avg_c_rate, "
         " :calendar_age_days, :predicted_soh, :model_version)"
     )
-    params = {col: float(features[col]) for col in RAW_INPUT_COLUMNS}
+    # Heterogeneous on purpose: every bound parameter is a float except the model version.
+    # Inferred from the comprehension alone this reads as dict[str, float], which is what
+    # made the next assignment a type error rather than the intended shape.
+    params: dict[str, float | str] = {col: float(features[col]) for col in RAW_INPUT_COLUMNS}
     params["predicted_soh"] = float(predicted_soh)
     params["model_version"] = model_version
     with engine.begin() as conn:

@@ -126,7 +126,9 @@ gridsense-ai/
 ├── Dockerfile                  # API image (serves /ask + /agent + /predict), non-root
 ├── docker-compose.yml          # postgres+pgvector, mlflow, langfuse, api
 ├── Makefile                    # common dev commands (make help)
-├── .github/workflows/ci.yml    # lint + test + build on every PR
+├── alembic.ini                 # migrations config (URL comes from DATABASE_URL)
+├── migrations/                 # Alembic chain; ships inside the API image
+├── .github/workflows/ci.yml    # lint + mypy + test + build-and-start on every PR
 ├── .github/workflows/eval.yml  # golden-dataset checks + RAGAS merge gate on every PR
 ├── .pre-commit-config.yaml
 ├── .mcp.json                   # MCP server registration for Claude Code / Desktop
@@ -142,6 +144,7 @@ gridsense-ai/
 ├── src/
 │   └── gridsense/
 │       ├── config.py           # pydantic-settings, env-driven
+│       ├── db.py               # the tables this app owns — one definition, two consumers
 │       ├── logconfig.py        # JSON logging + the request-id ContextVar
 │       ├── providers.py        # chat/embedding factories, per-provider timeouts
 │       ├── api/                # FastAPI app + routers
@@ -167,7 +170,7 @@ gridsense-ai/
 │           ├── evaluate.py     # metrics, model card
 │           ├── monitor.py      # Evidently drift report
 │           └── serve.py        # load registered model, predict
-├── k8s/                        # optional: deployment + service manifests
+├── k8s/                        # optional: deployment + service + migration-job manifests
 ├── data/                       # sample docs + synthetic battery dataset
 └── tests/                      # pytest, both modules
 ```
@@ -607,6 +610,63 @@ process restarts, and enough of them take the service down without a single erro
 raised. The default is generous (120s) because a local Ollama on CPU is genuinely slow;
 tighten it for a hosted provider.
 
+### Schema migrations
+
+```bash
+make migrate                      # alembic upgrade head
+make migrate-new m="add a column" # autogenerate from src/gridsense/db.py
+make migrate-status               # current revision vs head
+```
+
+`src/gridsense/db.py` is the single definition of the tables this app owns, with two
+consumers: Alembic migrates it, and `create_all` builds it for local development and the
+integration tests. `tests/test_migrations.py` asserts the two agree — a column added to the
+metadata without a migration fails there rather than at the next INSERT.
+
+Before this, `degrade_predictions` was created by a `CREATE TABLE IF NOT EXISTS` run on
+every prediction. That is fine exactly until the first column change: `IF NOT EXISTS` does
+nothing to a table that already exists with the old shape, so the DDL and the database
+diverge with no error at all.
+
+> **⚠️ MLflow shares this database.** Its backend store is the same Postgres, and it
+> migrates its own schema with Alembic under the default `alembic_version`. GridSense
+> therefore uses `gridsense_alembic_version`, and restricts autogenerate to the tables it
+> declares. Without the first, the initial `alembic upgrade` reads MLflow's revision as its
+> own; without the second, `--autogenerate` proposes a migration that drops the experiment
+> tracking store. Both are guarded and tested.
+
+In Kubernetes, migrations run as a Job (`k8s/migrate-job.yaml`) rather than an
+initContainer: with two replicas an initContainer races two migrations against each other on
+every rollout. Apply it and wait for completion *before* rolling out the Deployment. The
+chain ships inside the image, so migrations and the code that needs them come from one
+artefact rather than from a developer's checkout.
+
+### Type checking and the coverage floor
+
+```bash
+make typecheck   # mypy
+make test-cov    # pytest with the coverage floor enforced
+```
+
+`mypy` runs over `src/` in CI, as a step separate from ruff so a type error and a style error
+are distinguishable in the checks list. It is deliberately not `strict`: the value here is
+catching contradictions inside code that *is* annotated — nearly all of it — not forcing
+annotations onto the ML scripts, where `Any` is often the honest type for a model object.
+
+`providers.py` has a narrow, documented exemption for two error codes. It is 140 lines of
+third-party constructor calls, and every error it raises is an artefact of how those
+libraries are typed (pydantic aliases, `SecretStr` coercion, `**kwargs` into heterogeneous
+models) rather than a defect. What covers that module instead is `tests/test_providers.py`,
+which asserts against the **built client object** rather than the kwargs dict — because a
+parameter passed the wrong way is accepted, warned about once, and then never sent.
+
+The coverage floor (`fail_under = 80` in `pyproject.toml`) is set from the measured total,
+not from an aspiration: a gate above what the suite reaches fails on the first PR and gets
+deleted, and one far below never fires. It is there to catch a *drop*, so it moves up when
+real coverage does and never down to accommodate a regression. It lives in `pyproject.toml`
+rather than in a CI flag for the same reason the eval thresholds live in Python: lowering it
+should show up in a code review as a change someone has to argue for.
+
 ---
 
 ## Roadmap / milestones
@@ -634,6 +694,11 @@ This is built milestone by milestone so progress is visible in the commit histor
       `/health`, an unprivileged container, and a CI step that starts the image instead of
       only building it.
 
+- [x] **M10 — Schema and type discipline.** Alembic migrations with the metadata as a single
+      source of truth (and a version table kept clear of MLflow's, which shares the
+      database), mypy over `src/` in CI, an enforced coverage floor, and a migration Job for
+      Kubernetes.
+
 **Definition of done (per module):** runs from a clean clone via documented commands,
 covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 
@@ -649,12 +714,11 @@ covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 > fails. The Claude-judged run has not been recorded here — those numbers should be measured
 > and written down, not assumed to have improved.
 
-> **Still open after M9.** Three gaps are known and deliberately not closed: the database
-> schema is created by `CREATE TABLE IF NOT EXISTS` at runtime rather than by migrations,
-> which holds until the first column change; there is no type checker despite annotations
-> throughout, and coverage is measured but not gated; and rate limiting is per process, so
-> it does not hold across replicas. None of them blocks a deployment. The first two block
-> the second year of one.
+> **Still open after M10.** Rate limiting is per process, so it does not hold across
+> replicas — a limit that must is an ingress concern, not an application one. The `/agent`
+> endpoint and the Claude path remain unverified against a live API, and the eval gates have
+> never run against Claude, because the account funding them has no credits. Neither is a
+> code defect, and neither should be reported as measured.
 
 ---
 
@@ -663,7 +727,7 @@ covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 `Python 3.11` · `Claude Opus 5` / `Haiku 4.5` · `Anthropic SDK` · `MCP` · `LangChain` ·
 `pgvector` / `Postgres` · `Azure OpenAI` · `Ollama` ·
 `Langfuse` · `RAGAS` · `MLflow` · `Evidently` · `FastAPI` · `Pydantic` · `Docker` / `docker-compose` ·
-`Kubernetes` (optional) · `GitHub Actions` · `pytest` · `ruff` · `pre-commit`
+`Kubernetes` (optional) · `GitHub Actions` · `pytest` · `ruff` · `mypy` · `Alembic` · `pre-commit`
 
 ## License
 

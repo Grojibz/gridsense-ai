@@ -16,6 +16,12 @@ WORKDIR /app
 # staying put.
 COPY pyproject.toml README.md ./
 COPY src ./src
+# The migration chain ships with the image so `alembic upgrade head` runs from the same
+# artefact that serves traffic. Applying migrations from a developer's checkout means the
+# schema and the running code came from two different commits, which is how a rollout
+# half-migrates.
+COPY alembic.ini ./
+COPY migrations ./migrations
 RUN pip install --upgrade pip && pip install ".[docrag,degrade,agent]"
 
 # Run unprivileged. A root process inside a container shares the host's user namespace by

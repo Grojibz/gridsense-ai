@@ -45,6 +45,14 @@ jobs:
           ruff check .
           ruff format --check .
 
+      # Separate step from ruff so a type error and a style error are distinguishable in the
+      # checks list. Scope and per-module exemptions are in pyproject, with their reasons.
+      - name: Type check (mypy)
+        run: mypy
+
+      # The coverage floor lives in pyproject (`fail_under`), not in this flag, so that
+      # lowering it shows up in a code review as a change someone has to argue for — the
+      # same reason the eval thresholds are in Python rather than in CI YAML.
       - name: Test (pytest)
         run: pytest --cov=gridsense --cov-report=term-missing
 

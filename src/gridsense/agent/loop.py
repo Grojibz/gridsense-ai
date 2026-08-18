@@ -132,7 +132,7 @@ def build_tools(
     """
 
     @beta_tool
-    def search_docs(query: str, k: int = 4) -> dict[str, Any]:
+    def search_docs(query: str, k: int = 4) -> str:
         """Retrieve raw passages from the BESS documentation, without answering.
 
         Call this when you need the source text itself — to quote a threshold verbatim, or
@@ -143,10 +143,12 @@ def build_tools(
             query: What to look for.
             k: How many candidate passages to consider.
         """
-        return tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        return tools.as_tool_result(
+            tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        )
 
     @beta_tool
-    def ask_docs(question: str) -> dict[str, Any]:
+    def ask_docs(question: str) -> str:
         """Answer a question from the BESS documentation, with citations.
 
         Call this for anything about standards, state-of-health thresholds, operating
@@ -156,8 +158,10 @@ def build_tools(
         Args:
             question: The documentation question, in full.
         """
-        return tools.ask_docs(
-            question, vectorstore=vectorstore, chat_model=chat_model, settings=settings
+        return tools.as_tool_result(
+            tools.ask_docs(
+                question, vectorstore=vectorstore, chat_model=chat_model, settings=settings
+            )
         )
 
     @beta_tool
@@ -167,7 +171,7 @@ def build_tools(
         avg_dod: float,
         avg_c_rate: float,
         calendar_age_days: float,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Predict a pack's State of Health (%) from its operating conditions.
 
         Call this whenever the question turns on how a pack has aged or will age. It
@@ -181,20 +185,22 @@ def build_tools(
             avg_c_rate: Average C-rate.
             calendar_age_days: Calendar age in days.
         """
-        return tools.predict_soh(
-            cycle_count=cycle_count,
-            avg_temperature_c=avg_temperature_c,
-            avg_dod=avg_dod,
-            avg_c_rate=avg_c_rate,
-            calendar_age_days=calendar_age_days,
-            model=soh_model,
-            engine=engine,
-            settings=settings,
-            log=log_predictions,
+        return tools.as_tool_result(
+            tools.predict_soh(
+                cycle_count=cycle_count,
+                avg_temperature_c=avg_temperature_c,
+                avg_dod=avg_dod,
+                avg_c_rate=avg_c_rate,
+                calendar_age_days=calendar_age_days,
+                model=soh_model,
+                engine=engine,
+                settings=settings,
+                log=log_predictions,
+            )
         )
 
     @beta_tool
-    def drift_report(current_limit: int = 500) -> dict[str, Any]:
+    def drift_report(current_limit: int = 500) -> str:
         """Check whether recent predictions match the model's training distribution.
 
         Call this before trusting a prediction on unusual duty, or when asked whether the
@@ -204,7 +210,9 @@ def build_tools(
         Args:
             current_limit: How many recent predictions to compare.
         """
-        return tools.drift_report(current_limit=current_limit, engine=engine, settings=settings)
+        return tools.as_tool_result(
+            tools.drift_report(current_limit=current_limit, engine=engine, settings=settings)
+        )
 
     return [
         search_docs,

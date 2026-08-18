@@ -1,0 +1,71 @@
+# Schema migrations, as a Job rather than an initContainer on the Deployment.
+#
+# An initContainer looks tidier and is wrong here: with `replicas: 2` both pods would run
+# `alembic upgrade` at the same time. Alembic serialises through a lock on its version
+# table, so the second waits rather than corrupting anything — but it makes every rollout
+# race two migrations against each other for no benefit, and a lock held by a pod that gets
+# rescheduled mid-migration is a rollout that hangs.
+#
+# Run this to completion *before* rolling out a Deployment that needs the new schema:
+#
+#   kubectl apply -f k8s/migrate-job.yaml
+#   kubectl -n gridsense wait --for=condition=complete job/gridsense-migrate --timeout=300s
+#   kubectl -n gridsense rollout restart deployment/gridsense-api
+#
+# The image must be the *new* one: migrations ship inside it, so running the old image's
+# chain would apply the old schema. That is why `image:` here has to be kept in step with
+# the Deployment's — the two are the same artefact by design.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gridsense-migrate
+  namespace: gridsense
+  labels:
+    app.kubernetes.io/name: gridsense-migrate
+    app.kubernetes.io/part-of: gridsense
+spec:
+  # A failed migration is not something to retry blindly: the second attempt runs against a
+  # database the first one may have partly changed. Fail once, visibly, and look.
+  backoffLimit: 0
+  # Leave the pod around long enough to read its logs, then stop paying for it.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gridsense-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: gridsense-api:latest
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: gridsense-config
+            - secretRef:
+                name: gridsense-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: tmp
+          emptyDir: {}

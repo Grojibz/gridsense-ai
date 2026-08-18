@@ -65,14 +65,16 @@ def build_research_tool(
     settings = settings or get_settings()
 
     @beta_tool
-    def search_docs(query: str, k: int = 4) -> dict[str, Any]:
+    def search_docs(query: str, k: int = 4) -> str:
         """Retrieve passages from the BESS technical documentation.
 
         Args:
             query: What to look for. Search several phrasings rather than one.
             k: How many candidate passages to consider.
         """
-        return tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        return tools.as_tool_result(
+            tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        )
 
     @beta_tool
     def delegate_research(question: str) -> str:

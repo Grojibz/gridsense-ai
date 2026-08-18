@@ -27,12 +27,14 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api
-          # Build with: docker build -t gridsense-api:latest . — then push to your registry.
-          # Pin a digest or an immutable tag in a real deployment. `latest` with
-          # IfNotPresent means a node serves whatever it cached, two nodes can run
-          # different builds under the same name, and there is nothing to roll back *to*.
+          # Replace with an immutable reference before deploying — ideally a digest:
+          #   image: registry.example.com/gridsense-api@sha256:<digest>
+          # `latest` names a moving target: two nodes can serve different builds under it,
+          # and there is nothing to roll back *to*. `Always` at least makes every pod start
+          # fetch the current one, so a restart cannot silently resurrect a cached old
+          # build — the failure mode that makes "we rolled back" untrue.
           image: gridsense-api:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
