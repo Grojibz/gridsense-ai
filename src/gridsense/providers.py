@@ -1,15 +1,19 @@
-"""Factories for the LLM chat model and embeddings, selected by ``LLM_PROVIDER``.
+"""Factories for the LLM chat model and embeddings, selected by the configured providers.
 
 Centralising provider construction here keeps the rest of the code provider-agnostic:
 DocRAG and DegradeML ask for ``get_chat_model()`` / ``get_embeddings()`` and never care
-whether they're talking to Azure OpenAI or a local Ollama.
+whether they're talking to Anthropic, Azure OpenAI or a local Ollama.
+
+Chat and embeddings are chosen by two *separate* settings. That is not symmetry for its own
+sake: Anthropic ships no embeddings API, so the default configuration — Claude generating,
+Ollama embedding — is unrepresentable with a single provider field.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gridsense.config import LLMProvider, Settings, get_settings
+from gridsense.config import ChatProvider, EmbeddingProvider, Settings, get_settings
 
 if TYPE_CHECKING:  # imported lazily at runtime to keep base imports cheap
     from langchain_core.embeddings import Embeddings
@@ -17,10 +21,10 @@ if TYPE_CHECKING:  # imported lazily at runtime to keep base imports cheap
 
 
 def get_embeddings(settings: Settings | None = None) -> Embeddings:
-    """Return an embeddings client for the configured provider."""
+    """Return an embeddings client for the configured embedding provider."""
     settings = settings or get_settings()
 
-    if settings.llm_provider is LLMProvider.ollama:
+    if settings.embedding_provider is EmbeddingProvider.ollama:
         from langchain_ollama import OllamaEmbeddings
 
         extra = {} if settings.ollama_num_gpu is None else {"num_gpu": settings.ollama_num_gpu}
@@ -40,15 +44,54 @@ def get_embeddings(settings: Settings | None = None) -> Embeddings:
     )
 
 
-def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0) -> BaseChatModel:
-    """Return a chat model for the configured provider.
+def anthropic_chat_kwargs(settings: Settings) -> dict:
+    """Build the ``ChatAnthropic`` constructor kwargs.
 
-    Temperature defaults to 0 — for a citing RAG assistant we want determinism, not
-    creativity.
+    Split out from :func:`get_chat_model` so the wire-level contract can be asserted in a
+    unit test without importing ``langchain_anthropic`` or touching the network.
+
+    Two things are deliberately *absent*:
+
+    - ``temperature`` — removed on Claude Opus 5, along with ``top_p`` / ``top_k``. Sending
+      it is a 400, not a warning. Determinism is steered with ``effort`` and the prompt now.
+    - ``thinking`` — thinking is on by default on Opus 5 and its depth is what ``effort``
+      controls. Passing ``{"type": "disabled"}`` would buy nothing here and costs two known
+      failure modes (tool calls emitted as plain text, ``<thinking>`` tags leaking into the
+      answer), both of which would land squarely on the structured-output path.
+    """
+    return {
+        "model": settings.anthropic_model,
+        "api_key": settings.anthropic_api_key,
+        "max_tokens": settings.anthropic_max_tokens,
+        # First-class parameter, not `model_kwargs`: langchain-anthropic hoists it out of
+        # `model_kwargs` with a warning and would otherwise leave it silently unset.
+        "output_config": {"effort": settings.anthropic_effort},
+    }
+
+
+def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0) -> BaseChatModel:
+    """Return a chat model for the configured chat provider.
+
+    ``temperature`` applies to the Azure and Ollama backends only, where 0 is what makes a
+    citing RAG assistant reproducible. Claude rejects the parameter outright, so it is
+    dropped rather than quietly forwarded — see :func:`anthropic_chat_kwargs`.
     """
     settings = settings or get_settings()
 
-    if settings.llm_provider is LLMProvider.ollama:
+    if settings.chat_provider is ChatProvider.anthropic:
+        # Config is checked before the import so a missing key reports the thing the
+        # operator can act on, rather than an ImportError from a dependency they would
+        # only need once the key existed.
+        if not settings.anthropic_api_key:
+            raise ValueError(
+                "chat_provider=anthropic but ANTHROPIC_API_KEY is unset. Set the key, or "
+                "switch CHAT_PROVIDER to azure|ollama."
+            )
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(**anthropic_chat_kwargs(settings))
+
+    if settings.chat_provider is ChatProvider.ollama:
         from langchain_ollama import ChatOllama
 
         extra = {} if settings.ollama_num_gpu is None else {"num_gpu": settings.ollama_num_gpu}

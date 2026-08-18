@@ -333,7 +333,7 @@ def answer_question(
     ended = datetime.now()
 
     if trace is not None:
-        model_label = getattr(chat_model, "model", None) or settings.llm_provider.value
+        model_label = getattr(chat_model, "model", None) or settings.chat_provider.value
         _safe(
             lambda: trace.generation(
                 name="generate",
