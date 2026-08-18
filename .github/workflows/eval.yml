@@ -60,20 +60,49 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
-          # Repository variable. Set EVAL_GATES=off to pause the credentialed gates without
-          # touching the secrets — e.g. while an embedding account is rate-limited.
+          # Repository *variable*. Set EVAL_GATES=off to pause the credentialed gates
+          # without touching the secrets — e.g. while an embedding account is rate-limited.
           EVAL_GATES: ${{ vars.EVAL_GATES }}
+          # Read only to catch the easy mistake of adding it under Secrets instead. A switch
+          # that silently does nothing is worse than no switch.
+          EVAL_GATES_AS_SECRET: ${{ secrets.EVAL_GATES }}
         run: |
-          if [ "${EVAL_GATES}" = "off" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Eval gates are switched OFF by the EVAL_GATES repository variable. This PR has NOT been evaluated. Remove the variable to re-enable."
-          elif [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${VOYAGE_API_KEY}" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "Both credentials present — the eval gates will run."
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ANTHROPIC_API_KEY (chat) and VOYAGE_API_KEY (embeddings) are both required. The eval gates are SKIPPED — this PR has NOT been evaluated."
+          # Echo what was actually read. Diagnosing "I set the variable and nothing happened"
+          # should take one click, not a round trip.
+          echo "EVAL_GATES (repository variable) = '${EVAL_GATES:-<unset>}'"
+          echo "ANTHROPIC_API_KEY present        = $([ -n "${ANTHROPIC_API_KEY}" ] && echo yes || echo no)"
+          echo "VOYAGE_API_KEY present          = $([ -n "${VOYAGE_API_KEY}" ] && echo yes || echo no)"
+
+          if [ -z "${EVAL_GATES}" ] && [ -n "${EVAL_GATES_AS_SECRET}" ]; then
+            echo "::error::EVAL_GATES is set as a repository SECRET. It has to be a repository VARIABLE (Settings -> Secrets and variables -> Actions -> Variables tab); secrets are not readable through the vars context. The switch is being ignored."
           fi
+
+          # Case- and whitespace-insensitive, and tolerant of the obvious synonyms: a switch
+          # that works for "off" but not "OFF" fails in the one situation it exists for.
+          switch=$(printf '%s' "${EVAL_GATES}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+          case "${switch}" in
+            off|false|0|no|disabled)
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::Eval gates are switched OFF by the EVAL_GATES repository variable. This PR has NOT been evaluated. Remove the variable to re-enable."
+              ;;
+            ""|on|true|1|yes|enabled)
+              if [ -n "${ANTHROPIC_API_KEY}" ] && [ -n "${VOYAGE_API_KEY}" ]; then
+                echo "available=true" >> "$GITHUB_OUTPUT"
+                echo "Both credentials present — the eval gates will run."
+              else
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                echo "::warning::ANTHROPIC_API_KEY (chat) and VOYAGE_API_KEY (embeddings) are both required. The eval gates are SKIPPED — this PR has NOT been evaluated."
+              fi
+              ;;
+            *)
+              # An unrecognised value is a typo, and guessing which way it was meant would
+              # silently pick a side. Fail loudly instead.
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "::error::EVAL_GATES has an unrecognised value '${EVAL_GATES}'. Use 'off' to pause the gates, or remove the variable to enable them."
+              exit 1
+              ;;
+          esac
 
   # The RAG merge gate. Claude judges, Voyage embeds — the split is forced, not stylistic:
   # Anthropic serves no embeddings API. Skipped on fork PRs, where GitHub deliberately
