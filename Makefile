@@ -1,8 +1,10 @@
 # Common GridSense developer commands. Override the interpreter with e.g. `make PY=.venv/bin/python`.
 PY ?= python
 
-.PHONY: help install install-eval install-agent up down logs lint fmt test test-integration \
-        ingest ask-serve train eval eval-ragas eval-gate eval-agent eval-agent-gate calibrate \n        monitor build mcp
+.PHONY: help install install-eval install-agent up down logs lint typecheck fmt test test-cov \
+        test-integration migrate migrate-down migrate-new migrate-status \
+        ingest ask-serve train eval eval-ragas eval-gate eval-agent eval-agent-gate calibrate \
+        monitor build mcp
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -25,9 +27,13 @@ down:  ## Stop all services
 logs:  ## Tail the api container logs
 	docker compose logs -f api
 
-lint:  ## Ruff lint + format check
+lint:  ## Ruff lint + format check + mypy
 	$(PY) -m ruff check .
 	$(PY) -m ruff format --check .
+	$(PY) -m mypy
+
+typecheck:  ## mypy only
+	$(PY) -m mypy
 
 fmt:  ## Apply ruff formatting + autofixes
 	$(PY) -m ruff format .
@@ -36,11 +42,30 @@ fmt:  ## Apply ruff formatting + autofixes
 test:  ## Run offline unit tests
 	$(PY) -m pytest
 
+test-cov:  ## Unit tests with the coverage floor enforced (what CI runs)
+	$(PY) -m pytest --cov=gridsense --cov-report=term-missing
+
 test-integration:  ## Run gated integration tests (needs the live stack)
 	RUN_INTEGRATION=1 $(PY) -m pytest
 
 build:  ## Build the api Docker image
 	docker build -t gridsense-api:latest .
+
+# --- Database ---
+migrate:  ## Apply all migrations to DATABASE_URL
+	$(PY) -m alembic upgrade head
+
+migrate-down:  ## Roll back the most recent migration
+	$(PY) -m alembic downgrade -1
+
+migrate-new:  ## Autogenerate a migration from gridsense/db.py -- make migrate-new m="add x"
+	@test -n "$(m)" || (echo 'Usage: make migrate-new m="what changed"' && exit 1)
+	$(PY) -m alembic revision --autogenerate -m "$(m)"
+	@echo "Read the generated file before committing: autogenerate proposes, it does not decide."
+
+migrate-status:  ## Show the current revision and the head
+	$(PY) -m alembic current
+	$(PY) -m alembic heads
 
 # --- DocRAG (Module A) ---
 ingest:  ## Ingest sample docs into pgvector

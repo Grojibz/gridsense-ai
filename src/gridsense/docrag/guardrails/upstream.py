@@ -285,7 +285,10 @@ def scrub_pii(text: str, *, use_ner: bool = False) -> PIIResult:
     for label, pattern in PII_PATTERNS:
         if label == "PHONE":
             continue  # handled separately: needs a digit-count check
-        scrubbed, hits = pattern.subn(lambda _m, lbl=label: f"[{lbl}]", scrubbed)
+        # `lbl=label` binds the loop variable per iteration; without it every replacement
+        # would use the last label. The default argument is what defeats mypy's inference
+        # here, not an unsound cast.
+        scrubbed, hits = pattern.subn(lambda _m, lbl=label: f"[{lbl}]", scrubbed)  # type: ignore[misc]
         found += [label] * hits
     scrubbed = _redact_phone(scrubbed, found)
 

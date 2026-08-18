@@ -86,6 +86,9 @@ def anthropic_chat_kwargs(settings: Settings) -> dict:
         # First-class parameter, not `model_kwargs`: langchain-anthropic hoists it out of
         # `model_kwargs` with a warning and would otherwise leave it silently unset.
         "output_config": {"effort": settings.anthropic_effort},
+        # Without a ceiling a hung provider holds the worker until the process restarts.
+        # The SDK's own default is generous; this makes it configurable and explicit.
+        "default_request_timeout": settings.request_timeout_seconds,
     }
 
 
@@ -95,6 +98,11 @@ def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0
     ``temperature`` applies to the Azure and Ollama backends only, where 0 is what makes a
     citing RAG assistant reproducible. Claude rejects the parameter outright, so it is
     dropped rather than quietly forwarded — see :func:`anthropic_chat_kwargs`.
+
+    Every backend gets ``request_timeout_seconds``, by three different parameter names
+    because no two of these clients agree on one. The uniformity matters more than the
+    spelling: a provider that stops responding must eventually raise rather than hold a
+    worker, or enough of them take the service down without a single error being logged.
     """
     settings = settings or get_settings()
 
@@ -120,6 +128,9 @@ def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0
             base_url=settings.ollama_base_url,
             temperature=temperature,
             num_ctx=settings.ollama_num_ctx,
+            # ChatOllama has no timeout field of its own; these reach the underlying httpx
+            # client. A local Ollama that stalls mid-generation otherwise blocks forever.
+            client_kwargs={"timeout": settings.request_timeout_seconds},
             **extra,
         )
 
@@ -131,4 +142,5 @@ def get_chat_model(settings: Settings | None = None, *, temperature: float = 0.0
         api_version=settings.azure_openai_api_version,
         azure_deployment=settings.azure_openai_chat_deployment,
         temperature=temperature,
+        request_timeout=settings.request_timeout_seconds,
     )

@@ -301,6 +301,15 @@ def score_with_ragas(
         show_progress=False,
     )
 
+    # `evaluate()` is typed as returning EvaluationResult | Executor; only the first has
+    # `.scores`. Asserting it converts a silent AttributeError deep in the loop into one
+    # clear failure at the boundary, which is the whole reason to narrow rather than ignore.
+    if not hasattr(result, "scores"):
+        raise RuntimeError(
+            f"RAGAS returned {type(result).__name__} rather than an EvaluationResult. "
+            "This usually means evaluate() was called in a mode that defers execution."
+        )
+
     for record, row in zip(judged, result.scores, strict=True):
         record.ragas = {
             RAGAS_METRIC_NAMES[key]: float(value)

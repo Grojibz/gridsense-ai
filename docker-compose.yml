@@ -95,6 +95,14 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      # `local` keeps the stack unauthenticated for development. The app refuses to start
+      # under any other ENVIRONMENT without API_KEYS — set both together to exercise auth.
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      API_KEYS: ${API_KEYS:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      AGENT_RATE_LIMIT_PER_MINUTE: ${AGENT_RATE_LIMIT_PER_MINUTE:-6}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
+      AGENT_MAX_TOTAL_TOKENS: ${AGENT_MAX_TOTAL_TOKENS:-200000}
       # Defaults keep the stack fully offline. Set CHAT_PROVIDER=anthropic (plus a key)
       # for Claude; embeddings stay on Ollama either way — Anthropic has no embeddings API.
       CHAT_PROVIDER: ${CHAT_PROVIDER:-ollama}

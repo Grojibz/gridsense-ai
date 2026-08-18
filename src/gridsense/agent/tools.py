@@ -203,3 +203,25 @@ def eval_gate(results_path: str | Path = DEFAULT_RESULTS_PATH) -> dict[str, Any]
         "thresholds": dict(THRESHOLDS),
         "violations": [{**v.model_dump(), "message": v.render().strip()} for v in violations],
     }
+
+
+def as_tool_result(payload: dict[str, Any]) -> str:
+    """Serialise a tool's return value for the Anthropic tool runner.
+
+    The functions above return dicts because that is the right shape for Python callers and
+    for the MCP server, whose SDK serialises a dict return to JSON text itself. The Anthropic
+    tool runner does **not**: it puts whatever the function returned straight into
+    ``tool_result.content``, which the Messages API defines as a string or a list of content
+    blocks. A bare object there is not a shape the API accepts.
+
+    That is also what ``beta_tool``'s own type says — its ``FunctionT`` is bound to a callable
+    returning ``str`` or an iterable of block params — and it is the reason the two surfaces
+    wrap the shared functions rather than registering them directly. No test caught it,
+    because every agent test replaces the client with a fake and so never serialises a
+    request; ``tests/test_agent_loop.py`` now drives the real SDK over a mock transport for
+    exactly this.
+
+    ``default=str`` so a stray non-serialisable value degrades to its repr rather than
+    raising inside the loop, where the failure would surface as an opaque tool error.
+    """
+    return json.dumps(payload, ensure_ascii=False, default=str)

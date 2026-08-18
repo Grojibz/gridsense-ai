@@ -123,10 +123,12 @@ the fully-offline path.
 gridsense-ai/
 ├── README.md
 ├── pyproject.toml              # deps, ruff, pytest config
-├── Dockerfile                  # API image (serves /ask + /predict)
+├── Dockerfile                  # API image (serves /ask + /agent + /predict), non-root
 ├── docker-compose.yml          # postgres+pgvector, mlflow, langfuse, api
 ├── Makefile                    # common dev commands (make help)
-├── .github/workflows/ci.yml    # lint + test + build on every PR
+├── alembic.ini                 # migrations config (URL comes from DATABASE_URL)
+├── migrations/                 # Alembic chain; ships inside the API image
+├── .github/workflows/ci.yml    # lint + mypy + test + build-and-start on every PR
 ├── .github/workflows/eval.yml  # golden-dataset checks + RAGAS merge gate on every PR
 ├── .pre-commit-config.yaml
 ├── .mcp.json                   # MCP server registration for Claude Code / Desktop
@@ -142,7 +144,14 @@ gridsense-ai/
 ├── src/
 │   └── gridsense/
 │       ├── config.py           # pydantic-settings, env-driven
+│       ├── db.py               # the tables this app owns — one definition, two consumers
+│       ├── logconfig.py        # JSON logging + the request-id ContextVar
+│       ├── providers.py        # chat/embedding factories, per-provider timeouts
 │       ├── api/                # FastAPI app + routers
+│       │   ├── security.py     # API-key auth; refuses to start unauthenticated
+│       │   ├── ratelimit.py    # per-caller token buckets, tighter on /agent
+│       │   ├── middleware.py   # request id, access log, exception containment
+│       │   └── routes_health.py  # /ready — readiness, distinct from /health
 │       ├── docrag/             # Module A
 │       │   ├── ingest.py       # loaders, chunking, embedding
 │       │   ├── retriever.py    # pgvector retriever
@@ -161,7 +170,7 @@ gridsense-ai/
 │           ├── evaluate.py     # metrics, model card
 │           ├── monitor.py      # Evidently drift report
 │           └── serve.py        # load registered model, predict
-├── k8s/                        # optional: deployment + service manifests
+├── k8s/                        # optional: deployment + service + migration-job manifests
 ├── data/                       # sample docs + synthetic battery dataset
 └── tests/                      # pytest, both modules
 ```
@@ -361,6 +370,14 @@ twenty passages, and the bulk of the reading is billed at roughly a fifth of Opu
   structurally — the same contract `RagAnswer` uses. `fallbacks: "default"` is enabled so a
   decline is re-run on a fallback model rather than simply stopping; set
   `ANTHROPIC_REFUSAL_FALLBACK=false` for an account without the beta.
+- **A tool must return a string.** The tool runner puts the return value straight into
+  `tool_result.content`, which the API defines as a string or a list of content blocks —
+  there is no serialisation step in between. Returning a dict puts a bare JSON object on the
+  wire. `beta_tool`'s own type says this (its `FunctionT` is bound to a callable returning
+  `str`), and mypy is what caught it; no test could, because every agent test replaces the
+  client with a fake and a fake never encodes a request. The MCP SDK, by contrast, serialises
+  a dict return itself — two surfaces over one tool layer, two different contracts. See
+  problem #7 in [`EVALUATION.md`](EVALUATION.md).
 - **Prompt caching has a floor.** The minimum cacheable prefix on Opus 5 is 512 tokens. The
   agent's system prompt plus tool schemas measures ~1150 tokens (tiktoken estimate), so it
   should cache; the DocRAG system prompt alone (~120 tokens) would not. Confirm with
@@ -496,6 +513,168 @@ make test-integration   # gated end-to-end tests against the live stack (RUN_INT
 (datastores + Ollama are referenced as external endpoints). Build and push the image, then
 `kubectl apply -f k8s/`.
 
+The Deployment runs unprivileged (`runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities
+dropped) against the image's own `USER 10001`. Set `API_KEYS` in the Secret before applying:
+the app refuses to start without it outside `local`/`test`.
+
+> One thing the manifests deliberately do *not* fix: `image: gridsense-api:latest` with
+> `imagePullPolicy: IfNotPresent`. Two nodes can serve different builds under that name and
+> there is nothing to roll back to. Pin a digest for a real deployment.
+
+## Operating the service
+
+Everything in this section exists because the endpoints spend money on someone else's
+behalf. `/ask` is a model call per request and `/agent` is a bounded loop of them plus a
+sub-agent, so an open deployment is not a missing nicety — it is an unmetered bill payable
+by whoever owns the provider key.
+
+### Authentication fails closed, at startup
+
+`API_KEYS` is comma-separated so a key can be rotated without a flag-day cutover. Outside
+`ENVIRONMENT=local` or `test`, an app with no keys **refuses to start**:
+
+```
+RuntimeError: ENVIRONMENT='k8s' but no API_KEYS is set. The API would start with /ask and
+/agent open to anyone, and both spend provider credits per request.
+```
+
+Failing at startup rather than at the first request puts the mistake in front of whoever is
+deploying, instead of in a bill weeks later. A configuration flag defaulting to "no auth"
+would have reproduced exactly the gap it was meant to close, because the default is what
+ships — so the opt-out (`API_AUTH_DISABLED=true`, for a gateway that authenticates in front
+of this service) is explicit and logged loudly at every startup.
+
+`/health` and `/ready` stay open: a probe cannot present a key, and a readiness check that
+401s takes the pod out of service for a reason unrelated to whether it can serve.
+
+### Three limits, and which one is real
+
+| Limit | Setting | Enforced by |
+|---|---|---|
+| Requests per caller | `RATE_LIMIT_PER_MINUTE` / `AGENT_RATE_LIMIT_PER_MINUTE` | This app, per process |
+| Tokens per `/agent` request | `AGENT_MAX_TOTAL_TOKENS` | This app — the loop stops |
+| Tokens the model aims for | `ANTHROPIC_TASK_BUDGET_TOKENS` | **Nothing. It is advisory** |
+
+The third row is the one to read twice. `output_config.task_budget` is a suggestion the
+model can see and paces itself against, not a cap — so it is left unset by default, and the
+ceiling that actually stops the spend is the local one. A `/agent` request that crosses it
+returns `refused: true, refusal_reason: "budget_exceeded"` rather than the partial work: a
+trajectory cut short has usually gathered facts without reaching the comparison they were
+for, and returning that as an answer is how a half-finished analysis reads as a conclusion.
+
+The two rate limits differ because the endpoints do not cost the same. A single number
+applied to `/ask` and `/agent` alike would have to be loose enough for the first, which
+makes it useless for the second.
+
+> **⚠️ Rate limiting is per process.** Two uvicorn workers, or the two replicas in
+> `k8s/deployment.yaml`, each keep their own buckets — the effective limit is N times the
+> configured one. This is a guardrail against a runaway client and an accidental loop, not a
+> defence against a distributed attacker. `X-Forwarded-For` is deliberately not trusted for
+> caller identity either, since any client can set it. A limit that must hold across
+> replicas needs shared state or an ingress that enforces it, and both belong in front of
+> the app rather than inside it.
+
+### Liveness and readiness are different questions
+
+`/health` reports that the process is serving and touches nothing external. `/ready` checks
+Postgres. They must not share an endpoint in either direction:
+
+- readiness on `/health` means a pod whose database is unreachable reports itself ready and
+  gets traffic routed to it — every request failing, the deployment reporting healthy;
+- liveness on `/ready` means a database blip **kills the container**, turning a dependency
+  outage into a restart loop that cannot fix it.
+
+The provider is deliberately not probed. Probing it would bill on a timer and take every pod
+out of service during one provider blip; a provider outage is surfaced per request, as
+`provider_error`.
+
+### Logs
+
+One JSON object per line on stdout, with a `request_id` that a `ContextVar` carries into log
+calls deep in the RAG chain — which know nothing about HTTP — without threading it through
+every signature. The id is read from `X-Request-ID` when a proxy already assigned one, and
+echoed on every response.
+
+```json
+{"ts": "...", "level": "WARNING", "logger": "gridsense.agent", "request_id": "8746432ade6d",
+ "message": "agent stopped: token budget exhausted", "billable_tokens": 201430,
+ "tools_called": ["search_docs", "predict_soh"]}
+```
+
+The formatter redacts on the field *name* — anything containing `api_key`, `secret`,
+`token`, `password` or `authorization` becomes `***` — so the guarantee holds for call sites
+nobody has written yet. `*_tokens` is excluded from that rule, because usage counts are among
+the most useful numbers in the log and the word would otherwise swallow them.
+
+Unhandled exceptions are the visible change: the traceback goes to the log and the caller
+gets a request id and nothing else. The FastAPI default returns the traceback, which leaks
+file paths, local variables, and on a connection failure a URL with credentials in it.
+
+### Timeouts
+
+`REQUEST_TIMEOUT_SECONDS` reaches every backend — by three different parameter names, since
+no two of these clients agree on one. Without it a hung provider holds a worker until the
+process restarts, and enough of them take the service down without a single error being
+raised. The default is generous (120s) because a local Ollama on CPU is genuinely slow;
+tighten it for a hosted provider.
+
+### Schema migrations
+
+```bash
+make migrate                      # alembic upgrade head
+make migrate-new m="add a column" # autogenerate from src/gridsense/db.py
+make migrate-status               # current revision vs head
+```
+
+`src/gridsense/db.py` is the single definition of the tables this app owns, with two
+consumers: Alembic migrates it, and `create_all` builds it for local development and the
+integration tests. `tests/test_migrations.py` asserts the two agree — a column added to the
+metadata without a migration fails there rather than at the next INSERT.
+
+Before this, `degrade_predictions` was created by a `CREATE TABLE IF NOT EXISTS` run on
+every prediction. That is fine exactly until the first column change: `IF NOT EXISTS` does
+nothing to a table that already exists with the old shape, so the DDL and the database
+diverge with no error at all.
+
+> **⚠️ MLflow shares this database.** Its backend store is the same Postgres, and it
+> migrates its own schema with Alembic under the default `alembic_version`. GridSense
+> therefore uses `gridsense_alembic_version`, and restricts autogenerate to the tables it
+> declares. Without the first, the initial `alembic upgrade` reads MLflow's revision as its
+> own; without the second, `--autogenerate` proposes a migration that drops the experiment
+> tracking store. Both are guarded and tested.
+
+In Kubernetes, migrations run as a Job (`k8s/migrate-job.yaml`) rather than an
+initContainer: with two replicas an initContainer races two migrations against each other on
+every rollout. Apply it and wait for completion *before* rolling out the Deployment. The
+chain ships inside the image, so migrations and the code that needs them come from one
+artefact rather than from a developer's checkout.
+
+### Type checking and the coverage floor
+
+```bash
+make typecheck   # mypy
+make test-cov    # pytest with the coverage floor enforced
+```
+
+`mypy` runs over `src/` in CI, as a step separate from ruff so a type error and a style error
+are distinguishable in the checks list. It is deliberately not `strict`: the value here is
+catching contradictions inside code that *is* annotated — nearly all of it — not forcing
+annotations onto the ML scripts, where `Any` is often the honest type for a model object.
+
+`providers.py` has a narrow, documented exemption for two error codes. It is 140 lines of
+third-party constructor calls, and every error it raises is an artefact of how those
+libraries are typed (pydantic aliases, `SecretStr` coercion, `**kwargs` into heterogeneous
+models) rather than a defect. What covers that module instead is `tests/test_providers.py`,
+which asserts against the **built client object** rather than the kwargs dict — because a
+parameter passed the wrong way is accepted, warned about once, and then never sent.
+
+The coverage floor (`fail_under = 80` in `pyproject.toml`) is set from the measured total,
+not from an aspiration: a gate above what the suite reaches fails on the first PR and gets
+deleted, and one far below never fires. It is there to catch a *drop*, so it moves up when
+real coverage does and never down to accommodate a regression. It lives in `pyproject.toml`
+rather than in a CI flag for the same reason the eval thresholds live in Python: lowering it
+should show up in a code review as a change someone has to argue for.
+
 ---
 
 ## Roadmap / milestones
@@ -517,6 +696,17 @@ This is built milestone by milestone so progress is visible in the commit histor
       server, a Claude tool-use loop with a Haiku research subagent, agent skills, and a
       trajectory eval gated in CI.
 
+- [x] **M9 — Service hardening.** API-key auth that fails closed at startup, per-caller
+      rate limits with a tighter budget on `/agent`, a hard per-request token ceiling,
+      structured JSON logs with a request id, provider timeouts, `/ready` split from
+      `/health`, an unprivileged container, and a CI step that starts the image instead of
+      only building it.
+
+- [x] **M10 — Schema and type discipline.** Alembic migrations with the metadata as a single
+      source of truth (and a version table kept clear of MLflow's, which shares the
+      database), mypy over `src/` in CI, an enforced coverage floor, and a migration Job for
+      Kubernetes.
+
 **Definition of done (per module):** runs from a clean clone via documented commands,
 covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 
@@ -532,6 +722,12 @@ covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 > fails. The Claude-judged run has not been recorded here — those numbers should be measured
 > and written down, not assumed to have improved.
 
+> **Still open after M10.** Rate limiting is per process, so it does not hold across
+> replicas — a limit that must is an ingress concern, not an application one. The `/agent`
+> endpoint and the Claude path remain unverified against a live API, and the eval gates have
+> never run against Claude, because the account funding them has no credits. Neither is a
+> code defect, and neither should be reported as measured.
+
 ---
 
 ## Tech stack
@@ -539,7 +735,7 @@ covered by tests, traced/tracked (Langfuse / MLflow), and green in CI.
 `Python 3.11` · `Claude Opus 5` / `Haiku 4.5` · `Anthropic SDK` · `MCP` · `LangChain` ·
 `pgvector` / `Postgres` · `Azure OpenAI` · `Ollama` ·
 `Langfuse` · `RAGAS` · `MLflow` · `Evidently` · `FastAPI` · `Pydantic` · `Docker` / `docker-compose` ·
-`Kubernetes` (optional) · `GitHub Actions` · `pytest` · `ruff` · `pre-commit`
+`Kubernetes` (optional) · `GitHub Actions` · `pytest` · `ruff` · `mypy` · `Alembic` · `pre-commit`
 
 ## License
 

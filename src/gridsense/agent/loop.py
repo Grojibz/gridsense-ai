@@ -21,6 +21,7 @@ string to pattern-match.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from anthropic import beta_tool
@@ -36,12 +37,32 @@ if TYPE_CHECKING:
     from langchain_postgres import PGVector
     from sqlalchemy.engine import Engine
 
+logger = logging.getLogger("gridsense.agent")
+
 #: Ceiling on coordinator turns. An agent that has taken this many and still has not
 #: answered is looping, and a bounded wrong answer beats an unbounded bill.
 MAX_ITERATIONS = 12
 
 #: Beta flag for the server-side refusal fallback.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+#: Beta flag for `output_config.task_budget`.
+TASK_BUDGET_BETA = "task-budgets-2026-03-13"
+
+#: Usage fields that represent tokens someone is billed for. Cache reads are billed at a
+#: discount rather than free, so they belong in a spend ceiling even though they are cheap.
+_BILLABLE_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def billable_tokens(usage: dict[str, int]) -> int:
+    """Total tokens spent so far. A proxy for cost, not a price — the rates differ."""
+    return sum(usage.get(field, 0) for field in _BILLABLE_USAGE_FIELDS)
+
 
 SYSTEM_PROMPT = """\
 You are a battery energy-storage (BESS) engineering assistant. You have two very different
@@ -111,7 +132,7 @@ def build_tools(
     """
 
     @beta_tool
-    def search_docs(query: str, k: int = 4) -> dict[str, Any]:
+    def search_docs(query: str, k: int = 4) -> str:
         """Retrieve raw passages from the BESS documentation, without answering.
 
         Call this when you need the source text itself — to quote a threshold verbatim, or
@@ -122,10 +143,12 @@ def build_tools(
             query: What to look for.
             k: How many candidate passages to consider.
         """
-        return tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        return tools.as_tool_result(
+            tools.search_docs(query, k, vectorstore=vectorstore, settings=settings)
+        )
 
     @beta_tool
-    def ask_docs(question: str) -> dict[str, Any]:
+    def ask_docs(question: str) -> str:
         """Answer a question from the BESS documentation, with citations.
 
         Call this for anything about standards, state-of-health thresholds, operating
@@ -135,8 +158,10 @@ def build_tools(
         Args:
             question: The documentation question, in full.
         """
-        return tools.ask_docs(
-            question, vectorstore=vectorstore, chat_model=chat_model, settings=settings
+        return tools.as_tool_result(
+            tools.ask_docs(
+                question, vectorstore=vectorstore, chat_model=chat_model, settings=settings
+            )
         )
 
     @beta_tool
@@ -146,7 +171,7 @@ def build_tools(
         avg_dod: float,
         avg_c_rate: float,
         calendar_age_days: float,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Predict a pack's State of Health (%) from its operating conditions.
 
         Call this whenever the question turns on how a pack has aged or will age. It
@@ -160,20 +185,22 @@ def build_tools(
             avg_c_rate: Average C-rate.
             calendar_age_days: Calendar age in days.
         """
-        return tools.predict_soh(
-            cycle_count=cycle_count,
-            avg_temperature_c=avg_temperature_c,
-            avg_dod=avg_dod,
-            avg_c_rate=avg_c_rate,
-            calendar_age_days=calendar_age_days,
-            model=soh_model,
-            engine=engine,
-            settings=settings,
-            log=log_predictions,
+        return tools.as_tool_result(
+            tools.predict_soh(
+                cycle_count=cycle_count,
+                avg_temperature_c=avg_temperature_c,
+                avg_dod=avg_dod,
+                avg_c_rate=avg_c_rate,
+                calendar_age_days=calendar_age_days,
+                model=soh_model,
+                engine=engine,
+                settings=settings,
+                log=log_predictions,
+            )
         )
 
     @beta_tool
-    def drift_report(current_limit: int = 500) -> dict[str, Any]:
+    def drift_report(current_limit: int = 500) -> str:
         """Check whether recent predictions match the model's training distribution.
 
         Call this before trusting a prediction on unusual duty, or when asked whether the
@@ -183,7 +210,9 @@ def build_tools(
         Args:
             current_limit: How many recent predictions to compare.
         """
-        return tools.drift_report(current_limit=current_limit, engine=engine, settings=settings)
+        return tools.as_tool_result(
+            tools.drift_report(current_limit=current_limit, engine=engine, settings=settings)
+        )
 
     return [
         search_docs,
@@ -236,7 +265,13 @@ def run_agent(
             )
         from anthropic import Anthropic
 
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        client = Anthropic(
+            api_key=settings.anthropic_api_key,
+            # Per API call, not per loop: the loop's own ceiling is MAX_ITERATIONS turns
+            # and `agent_max_total_tokens` of spend. This one stops a single hung turn
+            # from holding the worker indefinitely.
+            timeout=settings.request_timeout_seconds,
+        )
 
     if agent_tools is None:
         agent_tools = build_tools(
@@ -264,11 +299,25 @@ def run_agent(
         # `usage.cache_read_input_tokens` on the second call rather than assuming it does.
         "cache_control": {"type": "ephemeral"},
     }
+    betas: list[str] = []
     if settings.anthropic_refusal_fallback:
         # A safety decline otherwise just stops. `"default"` lets the API route by refusal
         # category instead of pinning a substitute model that would need migrating later.
         request["fallbacks"] = "default"
-        request["betas"] = [FALLBACK_BETA]
+        betas.append(FALLBACK_BETA)
+
+    if settings.anthropic_task_budget_tokens:
+        # Advisory, and the model can see it: it paces itself and will say when the budget
+        # was what constrained the answer. It is *not* the cost ceiling — that is the local
+        # check below, which does not depend on the model cooperating.
+        request["output_config"]["task_budget"] = {
+            "type": "tokens",
+            "total": settings.anthropic_task_budget_tokens,
+        }
+        betas.append(TASK_BUDGET_BETA)
+
+    if betas:
+        request["betas"] = betas
 
     runner = client.beta.messages.tool_runner(**request)
 
@@ -276,6 +325,8 @@ def run_agent(
     usage: dict[str, int] = {}
     final = None
     iterations = 0
+
+    budget = settings.agent_max_total_tokens
 
     for message in runner:
         final = message
@@ -286,6 +337,38 @@ def run_agent(
             for block in message.content
             if block.type == "tool_use"
         ]
+
+        # The hard cost ceiling, checked here rather than trusted to the provider. It is
+        # necessarily *after* the turn that crossed it — the spend is only known once the
+        # response exists — so this bounds the total at roughly one turn's overshoot, which
+        # is the best a client-side check can do. Stopping is reported as a refusal because
+        # what remains is a fragment: an agent cut off mid-trajectory has usually gathered
+        # facts without reaching the comparison they were for, and returning that as an
+        # answer is how a half-finished analysis gets read as a conclusion.
+        if budget and billable_tokens(usage) >= budget:
+            logger.warning(
+                "agent stopped: token budget exhausted",
+                extra={
+                    "iterations": iterations,
+                    "billable_tokens": billable_tokens(usage),
+                    "budget": budget,
+                    "tools_called": [call.name for call in calls],
+                },
+            )
+            return AgentAnswer(
+                answer=(
+                    "This question exhausted the per-request token budget before the agent "
+                    "finished. The partial work is not reported as an answer because a "
+                    "trajectory cut short usually stops before the step that draws the "
+                    "conclusion. Narrow the question, or raise AGENT_MAX_TOTAL_TOKENS."
+                ),
+                refused=True,
+                refusal_reason="budget_exceeded",
+                stop_reason=getattr(final, "stop_reason", None),
+                tool_calls=calls,
+                iterations=iterations,
+                usage=usage,
+            )
 
     if final is None:
         return AgentAnswer(
@@ -301,6 +384,10 @@ def run_agent(
     # and indexing into it is how this path usually breaks.
     if final.stop_reason == "refusal":
         details = getattr(final, "stop_details", None)
+        logger.warning(
+            "agent refused by safety classifier",
+            extra={"category": getattr(details, "category", None), "iterations": iterations},
+        )
         return AgentAnswer(
             answer="This request was declined by a safety classifier.",
             refused=True,
@@ -326,6 +413,16 @@ def run_agent(
             usage=usage,
         )
 
+    logger.info(
+        "agent answered",
+        extra={
+            "iterations": iterations,
+            "tools_called": [call.name for call in calls],
+            "billable_tokens": billable_tokens(usage),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "stop_reason": final.stop_reason,
+        },
+    )
     return AgentAnswer(
         answer=text,
         tool_calls=calls,

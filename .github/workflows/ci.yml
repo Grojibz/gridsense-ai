@@ -45,11 +45,19 @@ jobs:
           ruff check .
           ruff format --check .
 
+      # Separate step from ruff so a type error and a style error are distinguishable in the
+      # checks list. Scope and per-module exemptions are in pyproject, with their reasons.
+      - name: Type check (mypy)
+        run: mypy
+
+      # The coverage floor lives in pyproject (`fail_under`), not in this flag, so that
+      # lowering it shows up in a code review as a change someone has to argue for — the
+      # same reason the eval thresholds are in Python rather than in CI YAML.
       - name: Test (pytest)
         run: pytest --cov=gridsense --cov-report=term-missing
 
   build-image:
-    # Sanity-check the Docker build; image is not pushed.
+    # Sanity-check the Docker build *and that the result starts*; image is not pushed.
     runs-on: ubuntu-latest
     needs: lint-and-test
     steps:
@@ -58,3 +66,50 @@ jobs:
 
       - name: Build app image
         run: docker build -t gridsense:ci .
+
+      # A build that succeeds proves the dependencies resolve, not that the app runs. This
+      # job used to stop at the line above, which is why the image could ship missing an
+      # extra that `api/main.py` imports at module scope: `pip install` was happy, and the
+      # container would have crashed on its first start with nothing to catch it.
+      #
+      # No datastore and no provider key here on purpose — /health is a liveness probe and
+      # must not depend on either. If it ever starts to, this step fails, which is the
+      # correct outcome.
+      - name: The image actually starts and serves
+        run: |
+          docker run -d --name gridsense-smoke -p 8000:8000 -e ENVIRONMENT=local gridsense:ci
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "Healthy after ${attempt}s."
+              curl -fsS http://localhost:8000/health
+              exit 0
+            fi
+            # A container that has already exited will never become healthy; fail now with
+            # the logs rather than after the full timeout with nothing to read.
+            if [ -z "$(docker ps -q -f name=gridsense-smoke)" ]; then
+              echo "::error::The container exited during startup."
+              docker logs gridsense-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::error::The container never became healthy."
+          docker logs gridsense-smoke
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs gridsense-smoke || true
+
+      - name: Startup refuses to run unauthenticated when deployed
+        run: |
+          # The guarantee is that a deployment without API_KEYS *fails to start*. Asserting
+          # it here means it is checked on every PR rather than discovered in an incident.
+          start_app='from gridsense.api.main import create_app; create_app()'
+          if docker run --rm -e ENVIRONMENT=production gridsense:ci python -c "$start_app" 2>/dev/null; then
+            echo "::error::The app started in a deployed environment with no API_KEYS set."
+            exit 1
+          fi
+          echo "Correctly refused to start without authentication."
