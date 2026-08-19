@@ -80,6 +80,14 @@ def create_app() -> FastAPI:
         Depends(require_api_key),
         Depends(rate_limit("default", lambda s: s.rate_limit_per_minute)),
     ]
+    # The chat page is guarded along with everything else, which makes it a **local
+    # development tool only**: a browser cannot send an `X-API-Key` header, so with
+    # `API_KEYS` set, opening `/` returns 401 and the UI is unreachable.
+    #
+    # That is the intended trade, not an oversight. Serving the page while guarding `/ask`
+    # would be worse — a UI that loads and then 401s on every question looks broken rather
+    # than protected. Making it genuinely usable when deployed needs a session login, which
+    # is a real feature and not something to imply by leaving a page open.
     app.include_router(chat_router, dependencies=guarded)
     app.include_router(ask_router, dependencies=guarded)
     app.include_router(predict_router, dependencies=guarded)
