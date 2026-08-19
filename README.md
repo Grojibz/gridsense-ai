@@ -498,7 +498,8 @@ Desktop session in this directory picks up the five tools with no extra setup. `
 runs it directly over stdio.
 
 Service URLs: API → `:8000` (**chat UI at `/`**, OpenAPI at `/docs`), MLflow → `:5000`,
-Langfuse → `:3000`. The chat page is a dependency-free DocRAG assistant that calls `/ask`.
+Langfuse → `:3000`. The chat page is a dependency-free DocRAG assistant that calls `/ask`;
+it is local-only by design — see [Authentication](#authentication-fails-closed-at-startup).
 
 ### Testing
 
@@ -546,6 +547,14 @@ of this service) is explicit and logged loudly at every startup.
 
 `/health` and `/ready` stay open: a probe cannot present a key, and a readiness check that
 401s takes the pod out of service for a reason unrelated to whether it can serve.
+
+> **The chat page at `/` is a local development tool.** It is guarded like everything else,
+> and a browser cannot send an `X-API-Key` header — so with `API_KEYS` set, opening `/`
+> returns 401 and the UI is unreachable. That is deliberate. Serving the page while guarding
+> `/ask` would be worse: a UI that loads and then 401s on every question looks broken rather
+> than protected. Making it usable in a deployment needs a session login, which is a real
+> feature rather than something to imply by leaving a page open. Run it with
+> `ENVIRONMENT=local`, which is what `docker compose` does by default.
 
 ### Three limits, and which one is real
 

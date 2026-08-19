@@ -125,3 +125,26 @@ def test_probes_stay_open_so_a_liveness_check_cannot_401(monkeypatch: pytest.Mon
         assert client.post("/ask", json={"question": "hi"}).status_code == 401
     finally:
         get_settings.cache_clear()
+
+
+def test_the_chat_page_is_local_only_once_auth_is_on(monkeypatch: pytest.MonkeyPatch):
+    """A browser cannot send X-API-Key, so the UI is unreachable in a deployment.
+
+    Asserted rather than left implicit because it is a documented trade, not an accident:
+    serving the page while guarding `/ask` would give a UI that loads and then 401s on every
+    question, which looks broken rather than protected. If someone later opens `/` to make
+    the page load, this test is where they have to argue for it.
+    """
+    monkeypatch.setenv("API_KEYS", "deploy-key")
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    from gridsense.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        from gridsense.api.main import create_app
+
+        client = TestClient(create_app())
+        assert client.get("/").status_code == 401
+        assert client.get("/chat").status_code == 401
+    finally:
+        get_settings.cache_clear()
