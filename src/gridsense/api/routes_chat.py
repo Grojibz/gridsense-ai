@@ -35,8 +35,9 @@ _CHAT_HTML = """<!doctype html>
   .panel { flex:1; display:none; flex-direction:column; min-height:0; }
   .panel.active { display:flex; }
   /* --- chat --- */
-  #log { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:14px;
+  #log { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:22px;
          max-width:820px; width:100%; margin:0 auto; }
+  .turn { display:flex; flex-direction:column; gap:10px; }
   .msg { padding:12px 14px; border-radius:14px; line-height:1.5; white-space:pre-wrap; max-width:85%; }
   .me { background:var(--me); align-self:flex-end; border-bottom-right-radius:4px; }
   .bot { background:var(--bot); align-self:flex-start; border-bottom-left-radius:4px; }
@@ -49,7 +50,7 @@ _CHAT_HTML = """<!doctype html>
   .cite { margin:6px 0; padding:8px 10px; background:#0b1220; border-radius:8px;
           border-left:3px solid var(--accent); }
   .cite b { color:var(--accent); }
-  .empty { color:var(--muted); align-self:center; margin-top:30vh; text-align:center; }
+  /* The composer sits at the top; answers stack underneath it, newest first. */
   form.chat { display:flex; gap:10px; padding:14px 20px; background:var(--panel);
               max-width:820px; width:100%; margin:0 auto; }
   form.chat input { flex:1; }
@@ -86,12 +87,11 @@ _CHAT_HTML = """<!doctype html>
   <div id="content">
     <!-- CHAT -->
     <div class="panel active" id="panel-chat">
-      <div id="log"><div class="empty">Pose une question sur les documents techniques.<br>
-        Ex. « Qu'est-ce que le thermal runaway ? »</div></div>
       <form class="chat" id="f">
         <input id="q" autocomplete="off" placeholder="Pose ta question…" autofocus />
         <button class="send" id="send" type="submit">Envoyer</button>
       </form>
+      <div id="log"></div>
     </div>
 
     <!-- PREDICT -->
@@ -138,11 +138,19 @@ _CHAT_HTML = """<!doctype html>
   const input = document.getElementById('q');
   const send = document.getElementById('send');
 
-  function clearEmpty(){ const e = log.querySelector('.empty'); if (e) e.remove(); }
-  function addUser(t){ clearEmpty(); const d=document.createElement('div'); d.className='msg me'; d.textContent=t; log.appendChild(d); log.scrollTop=log.scrollHeight; }
+  // The composer is at the top, so each new exchange is inserted above the previous
+  // ones: the answer you just asked for lands directly under the input, no scrolling.
+  let turn = null;
+  function addUser(t){
+    turn = document.createElement('div');
+    turn.className = 'turn';
+    const d = document.createElement('div'); d.className='msg me'; d.textContent = t;
+    turn.appendChild(d);
+    log.prepend(turn);
+  }
   function addTyping(){ const d=document.createElement('div'); d.className='msg bot';
     d.innerHTML='<span class="dots"><span>●</span><span>●</span><span>●</span></span>';
-    log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
+    turn.appendChild(d); return d; }
   function renderAnswer(node, data){
     const pct = Math.round((data.confidence ?? 0) * 100);
     const color = pct >= 50 ? 'var(--ok)' : pct > 0 ? 'var(--warn)' : 'var(--muted)';
@@ -164,7 +172,7 @@ _CHAT_HTML = """<!doctype html>
       for (const c of data.citations) html += `<div class="cite"><b>${esc(c.source)}</b><br>${esc(c.snippet)}</div>`;
       html += `</details>`;
     }
-    node.innerHTML = html; log.scrollTop = log.scrollHeight;
+    node.innerHTML = html;
   }
   form.addEventListener('submit', async e => {
     e.preventDefault();
