@@ -36,8 +36,14 @@ data/**/*.csv
 # Notebooks
 .ipynb_checkpoints/
 
-# Personal / interview prep — not part of the project docs
+# Personal / interview prep — not part of the project docs.
+# Anything dropped in ignore/ stays local. Kept as a folder rather than a growing list of
+# filenames so a new personal file is protected the moment it lands, instead of the first
+# time someone remembers to add a line here.
+ignore/
+# Legacy entries, kept in case a copy reappears at the repo root.
 presentation.md
+deep_dive_cheatsheet.html
 
 # OS / editor
 .DS_Store
